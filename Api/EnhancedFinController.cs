@@ -1,0 +1,307 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Net.Mime;
+using System.Threading.Tasks;
+using Jellyfin.Plugin.EnhancedFin.Data;
+using Jellyfin.Plugin.EnhancedFin.Services;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
+
+namespace Jellyfin.Plugin.EnhancedFin.Api
+{
+    /// <summary>
+    /// Enveloppe commune des réponses de liste : `{ items, total }`.
+    ///
+    /// Toutes les collections du plugin sortent sous cette forme ; un générique
+    /// évite d'en redéclarer une par domaine.
+    ///
+    /// ⚠️ Les propriétés sont en camelCase À DESSEIN, ici comme dans tous les DTOs
+    /// de ce plugin. Jellyfin sérialise avec `JsonDefaults.PascalCaseOptions`, dont
+    /// `PropertyNamingPolicy` vaut `null` : les noms partent **tels qu'écrits**.
+    /// Les renommer en PascalCase changerait le JSON et casserait le front JS
+    /// existant ainsi que le client Swift, sans aucune erreur de compilation.
+    /// </summary>
+    public record ListResponse<T>(IReadOnlyList<T> items, int total);
+
+    /// <summary>
+    /// Base commune à tous les controllers du plugin : authentification, identité
+    /// de l'appelant, validation des clés média et format d'erreur.
+    ///
+    /// Tout controller qui en hérite est authentifié par défaut — on ne peut pas
+    /// oublier l'attribut et exposer un endpoint par inadvertance, ce qui est
+    /// précisément ce qui est arrivé à l'ancien plugin (cf. SECURITY_AUDIT.md).
+    /// </summary>
+    [ApiController]
+    // ⚠️ [Authorize] **sans politique nommée**, et ce n'est pas un oubli.
+    //
+    // Testé sur Jellyfin 10.11.6 : `[Authorize(Policy = "DefaultAuthorizationPolicy")]`
+    // renvoie HTTP 500 sur toutes les routes —
+    // « The AuthorizationPolicy named: 'DefaultAuthorizationPolicy' was not found. »
+    // Ce nom désigne l'objet de politique par défaut, pas une politique **enregistrée** ;
+    // `DefaultAuthorization`, son équivalent de 10.9, n'existe plus non plus.
+    //
+    // [Authorize] nu s'appuie sur `AuthorizationOptions.DefaultPolicy`, que Jellyfin
+    // configure lui-même. La compilation ne dit rien de tout ça : seul un appel sur un
+    // vrai serveur révèle l'erreur.
+    [Authorize]
+    [Route("api/EnhancedFin/v1")]
+    [Produces(MediaTypeNames.Application.Json)]
+    public abstract class EnhancedFinController : ControllerBase
+    {
+        /// <summary>Nombre maximum d'items qu'une route de liste accepte de renvoyer.</summary>
+        protected const int MaxPageSize = 200;
+
+        /// <summary>Longueur maximale d'une valeur du client renvoyée en écho dans une erreur.</summary>
+        private const int MaxEchoLength = 64;
+
+        /// <summary>
+        /// Part de la durée au-delà de laquelle un média est considéré terminé.
+        ///
+        /// Seuil unique, volontairement partagé : il décide à la fois de la sortie du
+        /// Continue Watching et de l'entrée dans « à noter ». Deux valeurs différentes
+        /// rendraient un épisode simultanément « en cours » et « fini ».
+        ///
+        /// 0,9 reprend le `FINISHED_RATIO` de l'ancien plugin.
+        /// </summary>
+        /// <remarks>
+        /// `static readonly` et non `const` : le seuil est interpolé dans
+        /// <see cref="SqlIsWatched"/>, ce qu'une constante de compilation ne permet pas.
+        /// </remarks>
+        protected static readonly double FinishedRatio = 0.9;
+
+        /// <summary>
+        /// Condition SQL « cet épisode est vu », à injecter dans un WHERE.
+        ///
+        /// Une durée nulle signifie durée inconnue : on s'en remet alors au marquage,
+        /// faute de pouvoir mesurer l'avancement. Attention, `watched_at` seul ne prouve
+        /// rien — dans les données migrées il vaut la date de dernière activité, y compris
+        /// pour un épisode lancé puis abandonné au bout de quelques secondes.
+        /// </summary>
+        /// <remarks>
+        /// Le seuil est **interpolé** depuis <see cref="FinishedRatio"/> : le réécrire
+        /// en dur laisserait deux valeurs vivre côte à côte, et le jour où l'une
+        /// bougerait un épisode serait à la fois « en cours » et « fini ».
+        ///
+        /// `InvariantCulture` est indispensable : sous une culture française, 0.9 se
+        /// sérialiserait « 0,9 » et produirait du SQL invalide.
+        /// </remarks>
+        protected static readonly string SqlIsWatched =
+            "(p.duration_ticks <= 0 OR p.position_ticks >= p.duration_ticks * "
+            + FinishedRatio.ToString(CultureInfo.InvariantCulture) + ")";
+
+        /// <summary>
+        /// Identité de l'appelant, dérivée du token — jamais d'un paramètre de requête.
+        ///
+        /// Le GUID est normalisé en forme canonique ('D', avec tirets) : l'ancienne base
+        /// mélangeait les deux formats selon les tables, ce qui rendait toute jointure
+        /// impossible. Toute la base est désormais alignée sur cette forme.
+        /// </summary>
+        /// <remarks>
+        /// Trois refus volontaires :
+        ///
+        /// - **pas de repli sur `ClaimTypes.NameIdentifier`** : rien ne garantit qu'il
+        ///   porte un identifiant d'utilisateur Jellyfin ;
+        /// - **une valeur non analysable en GUID est rejetée** au lieu d'être renvoyée
+        ///   telle quelle : elle servait sinon de clé de partitionnement en base, et
+        ///   deux appelants portant la même chaîne partageaient leurs données ;
+        /// - **`Guid.Empty` est rejeté** : un jeton de clé API porte `Jellyfin-UserId`
+        ///   à zéro, ce qui créait un « utilisateur » fantôme partagé par toutes les
+        ///   clés API du serveur.
+        /// </remarks>
+        protected Guid? current_user()
+        {
+            var claim = User.FindFirst("Jellyfin-UserId");
+
+            if (!Guid.TryParse(claim?.Value, out var guid) || guid == Guid.Empty)
+                return null;
+
+            return guid;
+        }
+
+        /// <summary>
+        /// Identité de l'appelant en forme canonique 'D', telle qu'elle est stockée.
+        ///
+        /// L'ancienne base mélangeait les deux formats selon les tables, ce qui rendait
+        /// toute jointure impossible. Toute la base est désormais alignée sur cette forme.
+        /// </summary>
+        protected string? current_user_id() => current_user()?.ToString("D");
+
+        /// <summary>
+        /// Valide une clé média au format '{movie|tv}:{tmdb_id}'.
+        ///
+        /// Le préfixe de type n'est pas décoratif : TMDB a des espaces d'ID séparés,
+        /// donc movie:550 et tv:550 désignent deux œuvres sans rapport.
+        /// </summary>
+        protected static bool is_valid_media_key(string key) =>
+            MediaCatalog.split(key) is not null;
+
+        /// <summary>
+        /// Valide un filtre de type de média.
+        ///
+        /// `null` est valide : le paramètre est facultatif sur toutes les routes qui
+        /// l'acceptent, et l'omettre signifie « les deux types ».
+        /// </summary>
+        protected static bool is_valid_media_type(string? type) =>
+            type is null or "movie" or "tv";
+
+        /// <summary>
+        /// Borne une pagination de liste.
+        ///
+        /// Parametres :
+        /// - limit (int?) : taille demandée, `null` pour le maximum
+        /// - offset (int?) : décalage demandé
+        ///
+        /// Output :
+        /// - page ((int Limit, int Offset)?) : valeurs bornées, null si hors domaine
+        /// </summary>
+        protected static (int Limit, int Offset)? page_of(int? limit, int? offset)
+        {
+            var taken = limit ?? MaxPageSize;
+            var skipped = offset ?? 0;
+
+            if (taken is < 1 || taken > MaxPageSize) return null;
+            if (skipped < 0) return null;
+
+            return (taken, skipped);
+        }
+
+        /// <summary>
+        /// Erreur RFC 7807, enrichie de `success` et `message` pour que le front JS
+        /// existant fonctionne sans modification. Ces deux champs seront retirables
+        /// une fois le JS migré, sans impact sur les clients Swift.
+        /// </summary>
+        protected ObjectResult problem(int status, string title, string detail)
+        {
+            var pd = new ProblemDetails
+            {
+                Type = $"https://enhancedfin/errors/{title.ToLowerInvariant().Replace(' ', '-')}",
+                Title = title,
+                Status = status,
+                Detail = detail,
+            };
+            pd.Extensions["success"] = false;
+            pd.Extensions["message"] = detail;
+
+            return StatusCode(status, pd);
+        }
+
+        /// <summary>Raccourci pour l'erreur d'authentification, identique partout.</summary>
+        protected ObjectResult not_authenticated() =>
+            problem(401, "Non authentifié", "Aucun utilisateur associé au token.");
+
+        /// <summary>Raccourci pour une clé média mal formée.</summary>
+        /// <remarks>
+        /// L'entrée est **tronquée** avant d'être renvoyée en écho : une clé de
+        /// plusieurs kilo-octets se retrouverait sinon recopiée dans la réponse et
+        /// dans les journaux, aux frais du serveur.
+        /// </remarks>
+        protected ObjectResult invalid_media_key(string key) =>
+            problem(400, "Clé média invalide",
+                    $"'{truncate(key)}' n'est pas au format 'movie:123' ou 'tv:123'.");
+
+        /// <summary>Raccourci pour un filtre de type non reconnu.</summary>
+        protected ObjectResult invalid_media_type() =>
+            problem(400, "Type invalide", "type doit valoir 'movie', 'tv', ou être omis.");
+
+        /// <summary>Raccourci pour une pagination hors domaine.</summary>
+        protected ObjectResult invalid_page() =>
+            problem(400, "Pagination invalide",
+                    $"limit doit être compris entre 1 et {MaxPageSize}, offset positif.");
+
+        /// <summary>
+        /// Prépare un média pour une écriture : clé valide, puis présent au référentiel.
+        ///
+        /// Le référentiel est peuplé **paresseusement** : un média inconnu est récupéré
+        /// depuis TMDB plutôt que de faire échouer l'écriture sur la clé étrangère.
+        /// Sans ça, on ne pourrait noter que ce que la migration a importé.
+        ///
+        /// Parametres :
+        /// - catalog (MediaCatalog) : service de peuplement
+        /// - media_key (string) : clé du média
+        ///
+        /// Output :
+        /// - error (ActionResult | null) : la réponse d'erreur, ou null si tout va bien
+        /// </summary>
+        protected async Task<ActionResult?> ensure_media(MediaCatalog catalog, string media_key)
+        {
+            if (!is_valid_media_key(media_key)) return invalid_media_key(media_key);
+
+            return await catalog.ensure_exists(media_key)
+                ? null
+                : problem(404, "Média inconnu", $"'{truncate(media_key)}' est introuvable sur TMDB.");
+        }
+
+        /// <summary>
+        /// Exécute une écriture rattachée à un média, et traduit la violation de clé
+        /// étrangère en 404.
+        ///
+        /// SQLite renvoie le code **19** quand le média n'est pas dans `media`. C'est
+        /// une donnée manquante, pas une panne : elle mérite un 404, pas un 500.
+        ///
+        /// Parametres :
+        /// - db (Db) : source de connexion
+        /// - sql (string) : requête d'écriture
+        /// - bind (Action&lt;SqliteCommand&gt;) : liaison des paramètres
+        /// - media_key (string) : clé du média, pour le message d'erreur
+        ///
+        /// Output :
+        /// - result (ActionResult) : 204, ou 404 si le média manque au référentiel
+        /// </summary>
+        protected ActionResult write_for_media(
+            Db db, string sql, Action<SqliteCommand> bind, string media_key)
+        {
+            using var con = db.open();
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = sql;
+            bind(cmd);
+
+            try
+            {
+                cmd.ExecuteNonQuery();
+            }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+            {
+                return problem(404, "Média inconnu",
+                               $"'{truncate(media_key)}' doit d'abord être enregistré dans `media`.");
+            }
+
+            return NoContent();
+        }
+
+        /// <summary>
+        /// Compte les lignes que renverrait une liste **sans sa pagination**.
+        ///
+        /// `total` ne peut plus valoir `items.Count` depuis que les listes sont
+        /// bornées : c'est précisément ce nombre qui dit au client qu'il en reste.
+        /// Les paramètres de la commande de liste sont repris tels quels, pour que le
+        /// comptage porte exactement sur les mêmes filtres.
+        ///
+        /// Parametres :
+        /// - con (SqliteConnection) : connexion ouverte
+        /// - sql (string) : requête de comptage
+        /// - source (SqliteCommand) : commande de la liste
+        ///
+        /// Output :
+        /// - total (int) : nombre total de lignes
+        /// </summary>
+        protected static int count(SqliteConnection con, string sql, SqliteCommand source)
+        {
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = sql;
+
+            foreach (SqliteParameter p in source.Parameters)
+                cmd.Parameters.AddWithValue(p.ParameterName, p.Value ?? DBNull.Value);
+
+            return Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>Tronque une valeur venue du client avant de la renvoyer en écho.</summary>
+        private static string truncate(string? value)
+        {
+            value ??= "";
+            return value.Length <= MaxEchoLength ? value : value[..MaxEchoLength] + "…";
+        }
+    }
+}

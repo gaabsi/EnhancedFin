@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net9.0 imposé par Jellyfin.Controller 10.11 (10.9 était en net8.0,
+         Jellyfin 12 passera à net10.0). -->
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>Jellyfin.Plugin.EnhancedFin</AssemblyName>
+    <RootNamespace>Jellyfin.Plugin.EnhancedFin</RootNamespace>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <!-- On démarre propre, autant le rester : un warning ignoré aujourd'hui
+         est une dette demain. À repasser à false si ça devient bloquant. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 10.11.0 et pas 10.11.6 : compatible avec toutes les 10.11.x.
+         Jellyfin 12 passe à .NET 10 et casse la compat binaire des plugins
+         (cf. DESIGN.md) — la migration se fera par recompilation. -->
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.0" />
+    <PackageReference Include="Jellyfin.Model" Version="10.11.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+  </ItemGroup>
+
+</Project>

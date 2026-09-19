@@ -1,0 +1,24 @@
+# Sorties de compilation .NET
+bin/
+obj/
+
+# Données : la base du plugin contient des identifiants utilisateur et
+# l'historique de visionnage. Elle vit sur le serveur, jamais dans le dépôt.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Configuration déployée : porte la clé TMDB en clair.
+Jellyfin.Plugin.EnhancedFin.xml
+
+# Notes de travail : elles restent en local. Elles décrivent la construction
+# du projet, pas le projet, et portent des adresses de serveur, des accès de
+# test et des identifiants d'utilisateur.
+CLAUDE.md
+AVANCEMENT.md
+DESIGN.md
+
+# macOS
+.DS_Store
