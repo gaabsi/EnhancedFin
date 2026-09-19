@@ -27,6 +27,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         string title,
         int? year,
         string? posterUrl,
+        string? backdropUrl,
         bool inLibrary,
         string? jellyfinId);
 
@@ -43,6 +44,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         string title,
         int? year,
         string? posterUrl,
+        string? backdropUrl,
         int watchedEpisodes,
         string lastWatchedAt,
         bool inLibrary,
@@ -101,7 +103,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             using var con = _db.open();
             using var cmd = con.CreateCommand();
             cmd.CommandText = @"
-                SELECT r.media_key, r.score, r.rated_at, m.title, m.year, m.poster_url"
+                SELECT r.media_key, r.score, r.rated_at, m.title, m.year, m.poster_url,
+                       m.backdrop_url"
                 + where + @"
                 ORDER BY r.rated_at DESC
                 LIMIT $limit OFFSET $offset";
@@ -128,6 +131,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                     title: rd.GetString(3),
                     year: rd.IsDBNull(4) ? (int?)null : rd.GetInt32(4),
                     posterUrl: rd.IsDBNull(5) ? null : rd.GetString(5),
+                    backdropUrl: rd.IsDBNull(6) ? null : rd.GetString(6),
                     inLibrary: match is not null,
                     jellyfinId: match?.JellyfinId.ToString("D")));
             }
@@ -171,7 +175,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             using var cmd = con.CreateCommand();
             cmd.CommandText = @"
                 SELECT p.media_key, m.media_type, m.title, m.year, m.poster_url,
-                       COUNT(*) AS vus, MAX(p.updated_at) AS dernier"
+                       COUNT(*) AS vus, MAX(p.updated_at) AS dernier, m.backdrop_url"
                 + body + @"
                 ORDER BY dernier DESC
                 LIMIT $limit OFFSET $offset";
@@ -197,6 +201,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                     posterUrl: rd.IsDBNull(4) ? null : rd.GetString(4),
                     watchedEpisodes: rd.GetInt32(5),
                     lastWatchedAt: rd.GetString(6),
+                    backdropUrl: rd.IsDBNull(7) ? null : rd.GetString(7),
                     inLibrary: match is not null,
                     jellyfinId: match?.JellyfinId.ToString("D")));
             }

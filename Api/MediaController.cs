@@ -61,6 +61,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             cmd.CommandText = @"
                 SELECT m.media_key, m.media_type, m.tmdb_id, m.title, m.year,
                        m.poster_url, m.backdrop_url, m.logo_url, m.refreshed_at,
+                       m.vote_average, m.vote_count,
                        (SELECT score FROM rating      WHERE user_id=$u AND media_key=m.media_key),
                        (SELECT 1     FROM watchlist   WHERE user_id=$u AND media_key=m.media_key),
                        (SELECT 1     FROM follow      WHERE user_id=$u AND media_key=m.media_key),
@@ -98,22 +99,29 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 ["backdropUrl"] = rd.IsDBNull(6) ? null : rd.GetString(6),
                 ["logoUrl"] = rd.IsDBNull(7) ? null : rd.GetString(7),
                 ["refreshedAt"] = rd.GetString(8),
+                // Ajoutés après coup : le SELECT les place avant les colonnes
+                // utilisateur, d'où le décalage des index ci-dessous.
+                ["voteAverage"] = rd.IsDBNull(9) ? null : rd.GetDouble(9),
+                ["voteCount"] = rd.IsDBNull(10) ? null : rd.GetInt32(10),
             };
 
             // Index alignés sur l'ordre du SELECT :
-            // 9 = score, 10 = watchlist, 11 = follow, 12 = hidden_at.
+            // 11 = score, 12 = watchlist, 13 = follow, 14 = hidden_at.
             var me = new Dictionary<string, object?>
             {
-                ["rating"] = rd.IsDBNull(9) ? null : rd.GetInt32(9),
-                ["inWatchlist"] = !rd.IsDBNull(10),
-                ["following"] = !rd.IsDBNull(11),
-                ["hidden"] = !rd.IsDBNull(12),
-                ["hiddenAt"] = rd.IsDBNull(12) ? null : rd.GetString(12),
+                ["rating"] = rd.IsDBNull(11) ? null : rd.GetInt32(11),
+                ["inWatchlist"] = !rd.IsDBNull(12),
+                ["following"] = !rd.IsDBNull(13),
+                ["hidden"] = !rd.IsDBNull(14),
+                ["hiddenAt"] = rd.IsDBNull(14) ? null : rd.GetString(14),
             };
             rd.Close();
 
             me["progress"] = read_last_progress(con, user_id, mediaKey);
+            // `genres` reste la liste d'identifiants : le front JS la lit ainsi et
+            // la changer casserait le contrat. Les noms arrivent à côté.
             response["genres"] = read_genres(con, mediaKey);
+            response["genreNames"] = read_genre_names(con, mediaKey);
             response["me"] = me;
 
             if (detail)
@@ -185,6 +193,43 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         }
 
         /// <summary>
+        /// Noms des genres du média, dans le **même ordre** que `genres`.
+        ///
+        /// Le tri est celui de `read_genres`, sur `genre_id` : les deux listes
+        /// partent côte à côte dans la même réponse, et un client qui les associe
+        /// par position doit tomber juste. Trier celle-ci par nom les désalignait.
+        ///
+        /// Un genre dont le nom n'a jamais été vu est simplement absent : la
+        /// jointure interne l'écarte plutôt que de renvoyer un trou dans la liste.
+        /// Les deux listes peuvent donc différer en longueur — elles ne peuvent
+        /// pas différer en ordre.
+        ///
+        /// Parametres :
+        /// - con (SqliteConnection) : connexion ouverte
+        /// - media_key (string) : clé du média
+        ///
+        /// Output :
+        /// - names (List&lt;string&gt;) : noms, liste vide si aucun n'est connu
+        /// </summary>
+        private static List<string> read_genre_names(
+            Microsoft.Data.Sqlite.SqliteConnection con, string media_key)
+        {
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = @"
+                SELECT g.name
+                FROM media_genre mg JOIN genre g ON g.genre_id = mg.genre_id
+                WHERE mg.media_key = $k
+                ORDER BY mg.genre_id";
+            cmd.Parameters.AddWithValue("$k", media_key);
+
+            var names = new List<string>();
+            using var rd = cmd.ExecuteReader();
+            while (rd.Read()) names.Add(rd.GetString(0));
+
+            return names;
+        }
+
+        /// <summary>
         /// Métadonnées lourdes (synopsis, casting), chargées uniquement sur demande.
         ///
         /// Elles vivent dans une table séparée : cast_json pèse 2 à 8 Ko et SQLite lit
@@ -210,19 +255,30 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             using var rd = cmd.ExecuteReader();
             if (!rd.Read()) return null;
 
-            // cast_json est stocké tel que l'ancien front l'avait sérialisé : on le
-            // ré-expose en JSON plutôt qu'en chaîne échappée, pour que le client
-            // n'ait pas à le désérialiser une seconde fois.
+            // cast_json est ré-exposé en JSON plutôt qu'en chaîne échappée, pour que
+            // le client n'ait pas à le désérialiser une seconde fois.
+            //
+            // ⚠️ Toutes les lignes ne viennent pas de `serialize_cast`. Celles de la
+            // migration recopient verbatim ce que **le client** postait à l'ancien
+            // plugin : un `List<Dictionary<string,string>>`, donc des `id` en chaîne
+            // — quand il y en a un. Un casting de cette forme faisait échouer le
+            // décodage de toute la réponse côté Swift, pas seulement du casting :
+            // la fiche perdait logo, image de fond, genres, note ET synopsis, en
+            // silence. On préfère un casting absent à une fiche vide.
             object? cast = null;
             if (!rd.IsDBNull(1))
             {
                 try
                 {
-                    cast = JsonSerializer.Deserialize<JsonElement>(rd.GetString(1));
+                    var parsed = JsonSerializer.Deserialize<JsonElement>(rd.GetString(1));
+                    if (is_usable_cast(parsed)) cast = parsed;
                 }
                 catch (JsonException)
                 {
-                    cast = rd.GetString(1);
+                    // `null` et non la chaîne brute : le champ reste monomorphe.
+                    // Un client typé n'a pas à décoder tantôt un tableau, tantôt
+                    // du texte.
+                    cast = null;
                 }
             }
 
@@ -233,6 +289,33 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 screenwriters = rd.IsDBNull(2) ? null : rd.GetString(2),
                 studios = rd.IsDBNull(3) ? null : rd.GetString(3),
             };
+        }
+
+        /// <summary>
+        /// Vrai si le casting stocké a la forme que le client sait lire.
+        ///
+        /// Un tableau d'objets portant chacun un `id` numérique. Tout le reste —
+        /// `id` en chaîne, `id` absent, objet isolé, texte — vient de l'ancien
+        /// schéma et n'est pas décodable.
+        ///
+        /// Parametres :
+        /// - cast (JsonElement) : contenu désérialisé de cast_json
+        ///
+        /// Output :
+        /// - usable (bool) : vrai si le casting peut être renvoyé tel quel
+        /// </summary>
+        private static bool is_usable_cast(JsonElement cast)
+        {
+            if (cast.ValueKind != JsonValueKind.Array) return false;
+
+            foreach (var member in cast.EnumerateArray())
+            {
+                if (member.ValueKind != JsonValueKind.Object) return false;
+                if (!member.TryGetProperty("id", out var id)) return false;
+                if (id.ValueKind != JsonValueKind.Number) return false;
+            }
+
+            return true;
         }
     }
 }
