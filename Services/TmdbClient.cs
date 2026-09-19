@@ -11,7 +11,40 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.EnhancedFin.Services
 {
-    public record TmdbGenre([property: JsonPropertyName("id")] int Id);
+    public record TmdbGenre(
+        [property: JsonPropertyName("id")] int Id,
+        [property: JsonPropertyName("name")] string? Name = null);
+
+    /// <summary>Un membre du casting, dans l'ordre d'affiche de TMDB.</summary>
+    public record TmdbCastMember(
+        [property: JsonPropertyName("id")] int Id,
+        [property: JsonPropertyName("name")] string? Name,
+        [property: JsonPropertyName("character")] string? Character,
+        [property: JsonPropertyName("profile_path")] string? ProfilePath,
+        [property: JsonPropertyName("order")] int Order);
+
+    public record TmdbCredits(
+        [property: JsonPropertyName("cast")] List<TmdbCastMember>? Cast);
+
+    /// <summary>Un rôle tenu au fil d'une série.</summary>
+    public record TmdbAggregateRole(
+        [property: JsonPropertyName("character")] string? Character);
+
+    /// <summary>
+    /// Membre du casting d'une série.
+    ///
+    /// Forme distincte du casting de film : un acteur peut tenir plusieurs rôles
+    /// au fil des saisons, d'où `roles` au lieu d'un `character` unique.
+    /// </summary>
+    public record TmdbAggregateCastMember(
+        [property: JsonPropertyName("id")] int Id,
+        [property: JsonPropertyName("name")] string? Name,
+        [property: JsonPropertyName("profile_path")] string? ProfilePath,
+        [property: JsonPropertyName("order")] int Order,
+        [property: JsonPropertyName("roles")] List<TmdbAggregateRole>? Roles);
+
+    public record TmdbAggregateCredits(
+        [property: JsonPropertyName("cast")] List<TmdbAggregateCastMember>? Cast);
 
     public record TmdbItem(
         [property: JsonPropertyName("id")] int Id,
@@ -29,7 +62,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         [property: JsonPropertyName("images")] TmdbImages? Images = null,
         // Sert à classer films et séries ensemble : chaque liste TMDB est triée
         // par popularité, mais rien ne les ordonne entre elles.
-        [property: JsonPropertyName("popularity")] double? Popularity = null)
+        [property: JsonPropertyName("popularity")] double? Popularity = null,
+        [property: JsonPropertyName("vote_average")] double? VoteAverage = null,
+        [property: JsonPropertyName("credits")] TmdbCredits? Credits = null,
+        // Les séries n'ont presque jamais de `credits` exploitable : leur casting
+        // vit dans `aggregate_credits`, agrégé sur toutes les saisons.
+        [property: JsonPropertyName("aggregate_credits")] TmdbAggregateCredits? AggregateCredits = null,
+        [property: JsonPropertyName("vote_count")] int? VoteCount = null)
     {
         /// <summary>
         /// Logo à retenir, par ordre de préférence : français, anglais, puis sans
@@ -71,6 +110,49 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
     public record TmdbImages(
         [property: JsonPropertyName("logos")] List<TmdbImage>? Logos);
 
+    /// <summary>
+    /// Un crédit de filmographie, acteur ou équipe technique confondus.
+    ///
+    /// TMDB sert les deux dans la même forme, à un champ près : `character` pour un
+    /// rôle joué, `job` pour un poste occupé.
+    /// </summary>
+    public record TmdbCredit(
+        [property: JsonPropertyName("id")] int Id,
+        [property: JsonPropertyName("media_type")] string? MediaType,
+        [property: JsonPropertyName("title")] string? Title,
+        [property: JsonPropertyName("name")] string? Name,
+        [property: JsonPropertyName("release_date")] string? ReleaseDate,
+        [property: JsonPropertyName("first_air_date")] string? FirstAirDate,
+        [property: JsonPropertyName("poster_path")] string? PosterPath,
+        [property: JsonPropertyName("character")] string? Character,
+        [property: JsonPropertyName("job")] string? Job,
+        [property: JsonPropertyName("popularity")] double? Popularity)
+    {
+        public string DisplayTitle => Title ?? Name ?? "Sans titre";
+
+        public string? Date => ReleaseDate ?? FirstAirDate;
+
+        public int? Year =>
+            Date is { Length: >= 4 } d && int.TryParse(d[..4], out var y) ? y : null;
+
+        /// <summary>Ce qu'on affiche sous l'affiche : le rôle joué, ou le poste.</summary>
+        public string? Role => string.IsNullOrWhiteSpace(Character) ? Job : Character;
+    }
+
+    public record TmdbCombinedCredits(
+        [property: JsonPropertyName("cast")] List<TmdbCredit>? Cast,
+        [property: JsonPropertyName("crew")] List<TmdbCredit>? Crew);
+
+    public record TmdbPerson(
+        [property: JsonPropertyName("id")] int Id,
+        [property: JsonPropertyName("name")] string? Name,
+        [property: JsonPropertyName("biography")] string? Biography,
+        [property: JsonPropertyName("birthday")] string? Birthday,
+        [property: JsonPropertyName("deathday")] string? Deathday,
+        [property: JsonPropertyName("place_of_birth")] string? PlaceOfBirth,
+        [property: JsonPropertyName("profile_path")] string? ProfilePath,
+        [property: JsonPropertyName("combined_credits")] TmdbCombinedCredits? CombinedCredits);
+
     public record TmdbSearchResponse(
         [property: JsonPropertyName("results")] List<TmdbItem>? Results);
 
@@ -109,10 +191,23 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         private const string BaseUrl = "https://api.themoviedb.org/3";
         private const string ImageBase = "https://image.tmdb.org/t/p/w500";
 
+        /// <summary>
+        /// Plafond de lecture d'une réponse TMDB.
+        ///
+        /// La plus grosse réponse légitime est une filmographie complète, de l'ordre
+        /// de quelques centaines de kilo-octets. Sans plafond, `GetAsync` bufférise
+        /// tout ce qui arrive : une réponse anormale suffirait à faire enfler la
+        /// mémoire du Pi, où la limite du compose est de toute façon ignorée.
+        /// Au-delà, la lecture lève — et `fetch` renvoie `null`, comme pour toute
+        /// autre panne réseau.
+        /// </summary>
+        private const long MaxResponseBytes = 8L * 1024 * 1024;
+
         private static readonly HttpClient _client = new(
             new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All })
         {
             Timeout = TimeSpan.FromSeconds(10),
+            MaxResponseContentBufferSize = MaxResponseBytes,
         };
 
         // Recherches uniquement, TTL court : le catalogue TMDB bouge peu mais les
@@ -138,6 +233,18 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// tentative.
         /// </summary>
         private static readonly TimeSpan _miss_ttl = TimeSpan.FromMinutes(10);
+
+        /// <summary>
+        /// Durée de vie d'une fiche personne au cache.
+        ///
+        /// Longue à dessein : une filmographie ne bouge pas dans la journée, et
+        /// c'est la seule route du plugin qui expose directement un identifiant
+        /// choisi par l'appelant à un appel sortant. Sans cache, une boucle sur les
+        /// identifiants se traduisait en autant d'appels à TMDB — et un 429 sur la
+        /// clé ne casse pas que `/person` : `fetch` renvoie alors `null` pour la
+        /// recherche, l'enrichissement et la tâche d'entretien, pour tout le monde.
+        /// </summary>
+        private static readonly TimeSpan _person_ttl = TimeSpan.FromHours(12);
 
         private readonly ILogger<TmdbClient> _logger;
 
@@ -197,7 +304,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             // avec la fiche. `include_image_language` est indispensable — sans lui
             // TMDB ne renvoie que les images de la langue demandée, et les logos
             // sans texte (iso_639_1 = null) seraient exclus.
-            const string with_images = "&append_to_response=images&include_image_language=fr,en,null";
+            // Un seul aller-retour rapporte logo, casting et note.
+            // Le bloc de casting diffère selon le type : `credits` pour un film,
+            // `aggregate_credits` pour une série, dont le `credits` est presque
+            // toujours vide.
+            var credits_block = media_type == "tv" ? "aggregate_credits" : "credits";
+            var with_images =
+                $"&append_to_response=images,{credits_block}&include_image_language=fr,en,null";
 
             // Une absence est mise en cache elle aussi : sans ça, chaque `PUT` sur une
             // clé inexistante repartait vers TMDB.
@@ -248,6 +361,43 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             }
 
             return episodes;
+        }
+
+        /// <summary>
+        /// Fiche d'une personne, filmographie comprise.
+        ///
+        /// `combined_credits` rapporte films et séries en un seul appel, acteur et
+        /// équipe confondus — d'où l'absence de seconde requête.
+        ///
+        /// Mise en cache, symétriquement à `get_item` : réponse **et** absence.
+        /// C'était la seule méthode qui partait vers TMDB à chaque appel, alors
+        /// qu'elle est justement celle dont l'identifiant vient de l'extérieur —
+        /// une amplification de 1 pour 1 jusqu'au 429.
+        ///
+        /// Parametres :
+        /// - tmdb_id (int) : identifiant TMDB de la personne
+        ///
+        /// Output :
+        /// - person (TmdbPerson | null) : null si TMDB ne la connaît pas
+        /// </summary>
+        public async Task<TmdbPerson?> get_person(int tmdb_id)
+        {
+            var cache_key = $"person|{tmdb_id}";
+            if (_cache.TryGetValue(cache_key, out TmdbPerson? hit) && hit is not null) return hit;
+
+            var miss_key = $"miss|person|{tmdb_id}";
+            if (_cache.TryGetValue(miss_key, out _)) return null;
+
+            var person = await fetch<TmdbPerson>($"/person/{tmdb_id}", "&append_to_response=combined_credits");
+            if (person is null)
+            {
+                put(miss_key, "", _miss_ttl);
+                return null;
+            }
+
+            put(cache_key, person, _person_ttl);
+
+            return person;
         }
 
         /// <summary>

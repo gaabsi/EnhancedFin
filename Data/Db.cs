@@ -1,4 +1,6 @@
+using System;
 using System.IO;
+using System.Text.RegularExpressions;
 using MediaBrowser.Common.Configuration;
 using Microsoft.Data.Sqlite;
 
@@ -10,6 +12,15 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
     /// </summary>
     public class Db
     {
+        /// <summary>
+        /// Forme d'un identifiant SQL acceptable : lettre ou souligné, puis lettres,
+        /// chiffres et soulignés. Assez large pour tout nom de table, de colonne ou
+        /// de type SQLite utilisé ici, assez étroit pour qu'aucun fragment de
+        /// requête ne s'y glisse.
+        /// </summary>
+        private static readonly Regex SqlIdentifier =
+            new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
+
         public string ConnectionString { get; }
 
         public Db(IApplicationPaths app_paths)
@@ -19,6 +30,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
             ConnectionString = $"Data Source={Path.Combine(dir, "EnhancedFin.db")}";
 
             ensure_schema();
+            ensure_columns();
         }
 
         /// <summary>Ouvre une connexion prête à l'emploi (clés étrangères activées).</summary>
@@ -34,6 +46,67 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
             pragma.ExecuteNonQuery();
 
             return con;
+        }
+
+        /// <summary>
+        /// Ajoute les colonnes apparues après la création du schéma.
+        ///
+        /// `CREATE TABLE IF NOT EXISTS` ne touche pas une table déjà créée : sans
+        /// cette étape, une base existante n'obtiendrait jamais les colonnes
+        /// ajoutées par la suite. Chaque ajout est vérifié par `PRAGMA table_info`,
+        /// ce qui rend la méthode idempotente — SQLite n'a pas d'`ADD COLUMN IF NOT
+        /// EXISTS`.
+        ///
+        /// Rien d'autre que des `ALTER` ici : une table se déclare dans
+        /// `ensure_schema`, qui tourne au même démarrage et dont le
+        /// `CREATE TABLE IF NOT EXISTS` est déjà idempotent. Décrire le schéma à
+        /// deux endroits, c'est en avoir deux versions.
+        /// </summary>
+        private void ensure_columns()
+        {
+            using var con = new SqliteConnection(ConnectionString);
+            con.Open();
+
+            add_column(con, "media", "vote_average", "REAL");
+            add_column(con, "media", "vote_count", "INTEGER");
+        }
+
+        /// <summary>
+        /// Ajoute une colonne si elle manque.
+        ///
+        /// Parametres :
+        /// - con (SqliteConnection) : connexion ouverte
+        /// - table (string) : nom de la table
+        /// - column (string) : nom de la colonne
+        /// - type (string) : type SQLite
+        /// </summary>
+        /// <remarks>
+        /// Les trois identifiants sont **interpolés**, et il n'y a pas d'alternative :
+        /// SQLite n'accepte pas de paramètre lié à la place d'un nom de table ou de
+        /// colonne. Aujourd'hui tous les appels sont des littéraux écrits ici, donc
+        /// rien n'est exploitable — mais c'est un invariant tacite, que le premier
+        /// appel construit depuis une liste externe romprait sans bruit. Le garde
+        /// ci-dessous le rend explicite et bruyant.
+        /// </remarks>
+        private static void add_column(SqliteConnection con, string table, string column, string type)
+        {
+            if (!SqlIdentifier.IsMatch(table) || !SqlIdentifier.IsMatch(column) || !SqlIdentifier.IsMatch(type))
+                throw new ArgumentException($"Identifiant SQL invalide : {table}.{column} {type}");
+
+            using var check = con.CreateCommand();
+            check.CommandText = $"PRAGMA table_info({table})";
+
+            using (var rd = check.ExecuteReader())
+            {
+                while (rd.Read())
+                {
+                    if (rd.GetString(1) == column) return;
+                }
+            }
+
+            using var alter = con.CreateCommand();
+            alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {type}";
+            alter.ExecuteNonQuery();
         }
 
         /// <summary>
@@ -78,6 +151,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
                     media_key TEXT    NOT NULL REFERENCES media(media_key) ON DELETE CASCADE,
                     genre_id  INTEGER NOT NULL,
                     PRIMARY KEY (media_key, genre_id)
+                );
+
+                -- Référentiel des noms de genres TMDB : `media_genre` ne stocke que
+                -- des identifiants, et un client ne peut pas afficher « 18, 80 ».
+                CREATE TABLE IF NOT EXISTS genre (
+                    genre_id INTEGER PRIMARY KEY,
+                    name     TEXT NOT NULL
                 );
 
                 -- (`media_alias` a été retirée : aucune lecture ni écriture nulle part.
