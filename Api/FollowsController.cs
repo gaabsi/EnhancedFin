@@ -135,9 +135,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
             using var con = _db.open();
             using var cmd = con.CreateCommand();
+            // `m.media_type` est projeté : un film et un épisode ne se formatent pas
+            // pareil. Une sortie de film est stockée en saison 0 / épisode 0, forme
+            // qu'un client rendrait en « S0E00 » faute de savoir la distinguer.
             cmd.CommandText = @"
                 SELECT r.air_date, r.media_key, r.season, r.episode, r.episode_name,
-                       m.title, m.poster_url
+                       m.title, m.poster_url, m.media_type
                 FROM release r
                 JOIN follow f ON f.media_key = r.media_key AND f.user_id = $u
                 JOIN media  m ON m.media_key = r.media_key
@@ -157,12 +160,19 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 if (!by_day.TryGetValue(day, out var releases))
                     by_day[day] = releases = new List<object>();
 
+                var media_type = rd.GetString(7);
+
                 releases.Add(new
                 {
                     mediaKey = rd.GetString(1),
+                    mediaType = media_type,
                     season = rd.GetInt32(2),
                     episode = rd.GetInt32(3),
-                    episodeName = rd.IsDBNull(4) ? null : rd.GetString(4),
+                    // Nul pour un film : `refresh_movie_release` y recopie le titre
+                    // faute de mieux, mais `title` le porte déjà juste en dessous.
+                    // Le répéter ici ferait afficher deux fois la même chose au
+                    // client qui traite la ligne comme un épisode.
+                    episodeName = media_type == "movie" || rd.IsDBNull(4) ? null : rd.GetString(4),
                     title = rd.GetString(5),
                     posterUrl = rd.IsDBNull(6) ? null : rd.GetString(6),
                 });

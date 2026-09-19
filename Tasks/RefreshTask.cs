@@ -32,6 +32,15 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
         /// </summary>
         private const int BatchSize = 50;
 
+        /// <summary>
+        /// Délai avant de redemander à TMDB un champ qu'il n'avait pas.
+        ///
+        /// Logo, note et casting manquent définitivement pour une part du
+        /// catalogue. Les retenter chaque jour ne les fait pas apparaître, mais
+        /// suffit à saturer le lot quotidien avec les mêmes clés.
+        /// </summary>
+        private const int OptionalFieldRetryDays = 30;
+
         private readonly Db _db;
         private readonly MediaCatalog _catalog;
         private readonly ILogger<RefreshTask> _logger;
@@ -61,7 +70,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
         public async Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellation)
         {
             var incomplete = find_incomplete_media();
-            var followed = find_followed_series();
+            var followed = find_followed_media();
             var total = incomplete.Count + followed.Count;
 
             if (total == 0)
@@ -114,18 +123,35 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
 
             // L'absence d'image de fond ou d'année signale une fiche issue de la
             // migration : `ratings` et `watchlist` ne portaient pas ces champs.
-            // Le logo s'y ajoute : il n'a été demandé à TMDB qu'à partir du moment
-            // où `append_to_response=images` a été câblé, donc tout ce qui a été
-            // peuplé avant en est dépourvu.
+            // Le logo, la note et le casting s'y ajoutent : ils n'ont été demandés à
+            // TMDB qu'à partir du moment où `append_to_response` a été câblé, donc
+            // tout ce qui a été peuplé avant en est dépourvu. `ensure_exists` sort
+            // dès que le média existe, ils ne se rattraperaient jamais sans ça.
             //
-            // Un média sans logo chez TMDB repassera ici à chaque cycle. C'est sans
-            // conséquence : `ORDER BY refreshed_at` le renvoie en fin de file, et le
-            // lot est de 50 par jour.
+            // Deux régimes, parce que ces critères n'ont pas le même statut :
+            //
+            // - `backdrop_url` et `year` sont attendus sur toute fiche — on les
+            //   redemande sans délai ;
+            // - logo, note et casting **n'existent pas** pour une part du catalogue.
+            //   Un média que TMDB ignore ne les obtiendra jamais, et sans borne il
+            //   revient dans le lot à chaque exécution, indéfiniment, en occupant
+            //   50 places qui reviennent aux mêmes clés. La borne temporelle le
+            //   laisse repasser, mais une fois par mois.
             cmd.CommandText = @"
-                SELECT media_key FROM media
-                WHERE backdrop_url IS NULL OR year IS NULL OR logo_url IS NULL
-                ORDER BY refreshed_at
+                SELECT m.media_key FROM media m
+                WHERE m.backdrop_url IS NULL
+                   OR m.year IS NULL
+                   OR (m.refreshed_at < $stale
+                       AND (m.logo_url IS NULL
+                            OR m.vote_average IS NULL
+                            OR NOT EXISTS (SELECT 1 FROM media_detail d
+                                           WHERE d.media_key = m.media_key
+                                             AND d.cast_json IS NOT NULL)))
+                ORDER BY m.refreshed_at
                 LIMIT $limit";
+            cmd.Parameters.AddWithValue(
+                "$stale",
+                DateTime.UtcNow.AddDays(-OptionalFieldRetryDays).ToString("o", CultureInfo.InvariantCulture));
             cmd.Parameters.AddWithValue("$limit", BatchSize);
 
             var keys = new List<string>();
@@ -136,28 +162,40 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
         }
 
         /// <summary>
-        /// Séries suivies par au moins un utilisateur, dont les sorties n'ont pas été
+        /// Médias suivis par au moins un utilisateur, dont les sorties n'ont pas été
         /// rafraîchies depuis plus d'une journée.
         ///
+        /// Films compris : suivre un film enregistre sa date de sortie au calendrier,
+        /// de la même façon qu'une série y enregistre ses épisodes.
+        ///
         /// Output :
-        /// - keys (List&lt;string&gt;) : clés de séries, au plus BatchSize
+        /// - keys (List&lt;string&gt;) : clés média, séries **et films**, au plus BatchSize
         /// </summary>
-        private List<string> find_followed_series()
+        private List<string> find_followed_media()
         {
             using var con = _db.open();
             using var cmd = con.CreateCommand();
 
             // DISTINCT : deux utilisateurs suivant la même série ne la font rafraîchir
             // qu'une fois — `release` est un référentiel partagé.
+            //
+            // Un film déjà sorti est écarté : sa date ne bougera plus, et la relire
+            // coûte un `get_item` complet par jour et par film suivi. Une série, elle,
+            // annonce de nouveaux épisodes indéfiniment.
             cmd.CommandText = @"
                 SELECT DISTINCT f.media_key
                 FROM follow f JOIN media m ON m.media_key = f.media_key
-                WHERE m.media_type = 'tv'
-                  AND COALESCE((SELECT MAX(refreshed_at) FROM release r
+                WHERE COALESCE((SELECT MAX(refreshed_at) FROM release r
                                 WHERE r.media_key = f.media_key), '') < $cutoff
+                  AND NOT (m.media_type = 'movie'
+                           AND EXISTS (SELECT 1 FROM release r
+                                       WHERE r.media_key = f.media_key
+                                         AND r.air_date IS NOT NULL
+                                         AND r.air_date <= $today))
                 LIMIT $limit";
             cmd.Parameters.AddWithValue(
                 "$cutoff", DateTime.UtcNow.AddDays(-1).ToString("o", CultureInfo.InvariantCulture));
+            cmd.Parameters.AddWithValue("$today", DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
             cmd.Parameters.AddWithValue("$limit", BatchSize);
 
             var keys = new List<string>();
