@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using Jellyfin.Data.Enums;
+using Jellyfin.Database.Implementations.Entities;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
@@ -11,6 +14,29 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
 {
     /// <summary>Correspondance entre un média du référentiel et l'item Jellyfin qui le porte.</summary>
     public record LibraryMatch(string MediaKey, Guid JellyfinId, string Name);
+
+    /// <summary>
+    /// Un média que **Jellyfin** considère comme vu par cet utilisateur.
+    ///
+    /// Distinct de ce que porte la table `playback` du plugin : celle-ci ne connaît
+    /// que ce qu'un client lui a explicitement envoyé, alors que Jellyfin sait ce qui
+    /// a réellement été lu sur le serveur. Les deux sources se complètent — voir
+    /// `RatingsController.pending`.
+    ///
+    /// `Year` et `Name` viennent de l'item Jellyfin : un média vu mais jamais noté
+    /// n'est pas au référentiel, et n'a donc ni titre ni affiche de notre côté.
+    /// </summary>
+    public record WatchedMedia(
+        string MediaKey,
+        Guid JellyfinId,
+        string Name,
+        int? Year,
+        int WatchedEpisodes,
+        DateTime LastPlayedAt,
+        /// Vrai quand il ne reste rien à voir : tous les épisodes pour une série,
+        /// le film lui-même pour un film. Sans cette information, une œuvre plus
+        /// courte que le seuil de notation ne pourrait **jamais** être proposée.
+        bool IsComplete);
 
     /// <summary>
     /// Pont vers la bibliothèque Jellyfin.
@@ -52,12 +78,18 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
 
         private readonly ILibraryManager _library;
         private readonly IUserManager _users;
+        private readonly IUserDataManager _user_data;
         private readonly ILogger<JellyfinLibrary> _logger;
 
-        public JellyfinLibrary(ILibraryManager library, IUserManager users, ILogger<JellyfinLibrary> logger)
+        public JellyfinLibrary(
+            ILibraryManager library,
+            IUserManager users,
+            IUserDataManager user_data,
+            ILogger<JellyfinLibrary> logger)
         {
             _library = library;
             _users = users;
+            _user_data = user_data;
             _logger = logger;
         }
 
@@ -186,6 +218,175 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         }
 
         /// <summary>
+        /// Ce que **Jellyfin** sait avoir été vu par cet utilisateur.
+        ///
+        /// Le plugin ne recevait jusqu'ici aucun signal de lecture : sa table
+        /// `playback` n'est alimentée que par `PUT /me/progress`, qu'aucun client
+        /// n'appelle. Un film regardé sur le serveur n'entrait donc jamais dans
+        /// « à noter ». C'est cette source-là que le front web interroge en premier.
+        ///
+        /// Parametres :
+        /// - user_id (Guid) : utilisateur dont on applique les droits
+        ///
+        /// Output :
+        /// - watched (Dictionary&lt;string, WatchedMedia&gt;) : media_key -&gt; média vu,
+        ///   vide si la bibliothèque répond mal
+        /// </summary>
+        public Dictionary<string, WatchedMedia> watched(Guid user_id)
+        {
+            var watched = new Dictionary<string, WatchedMedia>(StringComparer.Ordinal);
+
+            var user = _users.GetUserById(user_id);
+            if (user is null) return watched;
+
+            collect_watched_movies(user, watched);
+            collect_watched_series(user, watched);
+
+            return watched;
+        }
+
+        /// <summary>
+        /// Ajoute les films marqués vus. Un film n'a pas d'épisode : son compte vaut 1,
+        /// ce qui le fait franchir n'importe quel seuil.
+        /// </summary>
+        private void collect_watched_movies(User user, Dictionary<string, WatchedMedia> into)
+        {
+            try
+            {
+                var items = _library.GetItemList(new InternalItemsQuery(user)
+                {
+                    IncludeItemTypes = new[] { BaseItemKind.Movie },
+                    IsPlayed = true,
+                    Recursive = true,
+                });
+
+                foreach (var item in items)
+                {
+                    if (media_key_of(item, "movie") is not { } media_key) continue;
+
+                    into.TryAdd(media_key, new WatchedMedia(
+                        MediaKey: media_key,
+                        JellyfinId: item.Id,
+                        Name: item.Name,
+                        Year: item.ProductionYear,
+                        WatchedEpisodes: 1,
+                        LastPlayedAt: last_played(user, item),
+                        // Un film vu est vu : il n'y a rien de plus à en voir.
+                        IsComplete: true));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[EnhancedFin] Films vus : lecture bibliothèque en échec");
+            }
+        }
+
+        /// <summary>
+        /// Ajoute les séries, avec leur nombre d'épisodes vus.
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ On interroge les **épisodes**, pas les séries. `IsPlayed = true` sur une
+        /// `Series` exige que **tous** ses épisodes soient vus : une série suivie à 5
+        /// épisodes sur 8 n'en sort pas, alors que c'est précisément le cas qui nous
+        /// intéresse (seuil de notation à 5). Mesuré sur le serveur de test :
+        /// *Lessons in Chemistry*, 5 épisodes vus sur 8, ressort à `Played = false`.
+        ///
+        /// La série est ensuite relue par son identifiant pour son `ProviderId` TMDB :
+        /// l'épisode porte le sien, qui désigne l'épisode et non l'œuvre.
+        /// </remarks>
+        private void collect_watched_series(User user, Dictionary<string, WatchedMedia> into)
+        {
+            try
+            {
+                var episodes = _library.GetItemList(new InternalItemsQuery(user)
+                {
+                    IncludeItemTypes = new[] { BaseItemKind.Episode },
+                    IsPlayed = true,
+                    Recursive = true,
+                });
+
+                foreach (var group in episodes.OfType<Episode>().GroupBy(e => e.SeriesId))
+                {
+                    var series = _library.GetItemById(group.Key);
+                    if (series is null) continue;
+                    if (media_key_of(series, "tv") is not { } media_key) continue;
+
+                    var watched_count = group.Count();
+
+                    into.TryAdd(media_key, new WatchedMedia(
+                        MediaKey: media_key,
+                        JellyfinId: series.Id,
+                        Name: series.Name,
+                        Year: series.ProductionYear,
+                        WatchedEpisodes: watched_count,
+                        LastPlayedAt: group.Max(e => last_played(user, e)),
+                        IsComplete: watched_count >= episode_count(user, series)));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[EnhancedFin] Séries vues : lecture bibliothèque en échec");
+            }
+        }
+
+        /// <summary>
+        /// Nombre total d'épisodes d'une série, vus ou non.
+        ///
+        /// Sert à reconnaître une œuvre **terminée**, ce qu'on ne peut pas déduire
+        /// autrement.
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ **Ne pas passer par `GetUserData(user, series).Played`.** Le
+        /// `UserItemData` d'une série est celui qui a été **stocké**, c'est-à-dire
+        /// renseigné seulement si la série a été explicitement marquée vue. L'API REST
+        /// de Jellyfin, elle, *calcule* `Played` et `UnplayedItemCount` en agrégeant
+        /// les épisodes — d'où un `Played = true` visible dans `/Users/{id}/Items` et
+        /// un `false` côté plugin, pour la même série. Mesuré sur *Dans leur regard*.
+        ///
+        /// `GetCount` plutôt que `GetItemList().Count` : on veut un nombre, pas
+        /// quelques centaines d'entités instanciées pour être aussitôt jetées.
+        ///
+        /// Une requête par série **commencée**, donc proportionnelle à ce que
+        /// l'utilisateur regarde et non à la taille de la bibliothèque.
+        ///
+        /// Parametres :
+        /// - user (User) : utilisateur dont on applique les droits
+        /// - series (BaseItem) : la série
+        ///
+        /// Output :
+        /// - count (int) : nombre d'épisodes, `int.MaxValue` si le compte échoue —
+        ///   une série n'est alors jamais dite terminée, ce qui est le repli sûr
+        /// </remarks>
+        private int episode_count(User user, BaseItem series)
+        {
+            try
+            {
+                return _library.GetCount(new InternalItemsQuery(user)
+                {
+                    AncestorIds = new[] { series.Id },
+                    IncludeItemTypes = new[] { BaseItemKind.Episode },
+                    Recursive = true,
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[EnhancedFin] Comptage des épisodes en échec pour {Series}", series.Name);
+
+                return int.MaxValue;
+            }
+        }
+
+        /// <summary>
+        /// Date de dernière lecture, ou une date plancher quand Jellyfin n'en a pas.
+        ///
+        /// Vérifié sur le serveur de test : un marquage manuel (sans lecture) pose bien
+        /// `LastPlayedDate`. Le repli ne sert donc qu'aux cas limites, où il relègue
+        /// l'item en fin de liste plutôt que de le faire disparaître.
+        /// </summary>
+        private DateTime last_played(User user, BaseItem item) =>
+            _user_data.GetUserData(user, item)?.LastPlayedDate ?? DateTime.MinValue;
+
+        /// <summary>
         /// Range des items Jellyfin sous leur clé média.
         ///
         /// Sans identifiant TMDB, un item ne peut pas être rattaché au référentiel :
@@ -202,13 +403,33 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         {
             foreach (var item in items)
             {
-                var tmdb = item.GetProviderId(MetadataProvider.Tmdb);
-                if (string.IsNullOrWhiteSpace(tmdb) || !int.TryParse(tmdb, out var tmdb_id))
-                    continue;
+                if (media_key_of(item, media_type) is not { } media_key) continue;
 
-                var media_key = $"{media_type}:{tmdb_id}";
                 into.TryAdd(media_key, new LibraryMatch(media_key, item.Id, item.Name));
             }
+        }
+
+        /// <summary>
+        /// Clé média d'un item Jellyfin, dérivée de son `ProviderId` TMDB.
+        ///
+        /// Point unique du rapprochement : l'index, la recherche et les médias vus
+        /// le faisaient chacun de leur côté, et un écart entre eux n'aurait produit
+        /// aucune erreur — juste des listes qui ne se recoupent pas.
+        ///
+        /// Parametres :
+        /// - item (BaseItem) : item de la bibliothèque
+        /// - media_type (string) : 'movie' ou 'tv'
+        ///
+        /// Output :
+        /// - media_key (string | null) : null si l'item n'a pas d'identifiant TMDB
+        /// </summary>
+        private static string? media_key_of(BaseItem item, string media_type)
+        {
+            var tmdb = item.GetProviderId(MetadataProvider.Tmdb);
+
+            return string.IsNullOrWhiteSpace(tmdb) || !int.TryParse(tmdb, out var tmdb_id)
+                ? null
+                : $"{media_type}:{tmdb_id}";
         }
     }
 }
