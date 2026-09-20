@@ -6,6 +6,7 @@ using Jellyfin.Plugin.EnhancedFin.Data;
 using Jellyfin.Plugin.EnhancedFin.Services;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.EnhancedFin.Api
 {
@@ -20,15 +21,53 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     /// Les dates de sortie viennent de TMDB. La disponibilité sur les sources externes
     /// est un tout autre sujet, qui relève de un autre plugin.
     /// </summary>
+    /// <summary>
+    /// Une sortie au calendrier : un épisode, ou un film le jour de sa sortie.
+    ///
+    /// Propriétés en camelCase à dessein — voir <see cref="ListResponse{T}"/>.
+    /// </summary>
+    public record CalendarRelease(
+        string mediaKey,
+        string mediaType,
+        int season,
+        int episode,
+        /// Nul pour un film : une sortie de film est stockée en saison 0 / épisode 0,
+        /// et `refresh_movie_release` y recopie le titre faute de mieux — que
+        /// `title` porte déjà. Le répéter ferait afficher deux fois la même chose au
+        /// client qui traite la ligne comme un épisode.
+        string? episodeName,
+        string title,
+        string? posterUrl,
+        /// Le fichier est sur ce serveur : le client peut ouvrir la fiche native
+        /// plutôt que la fiche de découverte.
+        bool inLibrary,
+        string? jellyfinId);
+
+    /// <summary>Les sorties d'un jour donné.</summary>
+    public record CalendarDay(string date, IReadOnlyList<CalendarRelease> releases);
+
+    /// <summary>
+    /// Le calendrier sur une plage, regroupé par jour.
+    ///
+    /// La plage demandée est renvoyée en écho : le client qui pagine par quinzaines
+    /// sait ainsi ce qu'il a réellement obtenu, sans recalculer ses bornes.
+    /// </summary>
+    public record CalendarResponse(string from, string to, IReadOnlyList<CalendarDay> days);
+
     public class FollowsController : EnhancedFinController
     {
         private readonly Db _db;
         private readonly MediaCatalog _catalog;
+        private readonly JellyfinLibrary _library;
+        private readonly ILogger<FollowsController> _logger;
 
-        public FollowsController(Db db, MediaCatalog catalog)
+        public FollowsController(
+            Db db, MediaCatalog catalog, JellyfinLibrary library, ILogger<FollowsController> logger)
         {
             _db = db;
             _catalog = catalog;
+            _library = library;
+            _logger = logger;
         }
 
         // GET /api/EnhancedFin/v1/me/follows
@@ -87,7 +126,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
             if (await ensure_media(_catalog, mediaKey) is { } error) return error;
 
-            return write_for_media(_db, @"
+            var written = write_for_media(_db, @"
                 INSERT INTO follow (user_id, media_key, added_at) VALUES ($u, $k, $now)
                 ON CONFLICT(user_id, media_key) DO NOTHING",
                 cmd =>
@@ -97,6 +136,48 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                     cmd.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
                 },
                 mediaKey);
+
+            // Les sorties sont récupérées **maintenant**, et non à la prochaine
+            // exécution de `RefreshTask`.
+            //
+            // Sans ça, suivre une série ne la fait apparaître au calendrier qu'après
+            // l'entretien quotidien de 4 h : on suit un média et il ne se passe
+            // visiblement rien, parfois pendant une journée entière.
+            //
+            // Après l'écriture du suivi, et sans conditionner la réponse : le suivi
+            // est déjà commité, donc une panne TMDB ou une requête abandonnée en
+            // cours de route ne le perd pas — `RefreshTask` rattrapera les sorties.
+            //
+            // Coût : un appel TMDB par saison, soit quelques secondes sur une longue
+            // série. Le client pose son état de façon optimiste, l'attente ne se voit
+            // donc pas à l'écran.
+            if (written is NoContentResult)
+                await refresh_releases_quietly(mediaKey);
+
+            return written;
+        }
+
+        /// <summary>
+        /// Récupère les dates de diffusion d'un média, sans jamais faire échouer
+        /// l'appel qui l'a demandé.
+        ///
+        /// Parametres :
+        /// - media_key (string) : média à rafraîchir
+        /// </summary>
+        private async Task refresh_releases_quietly(string media_key)
+        {
+            try
+            {
+                var count = await _catalog.refresh_releases(media_key);
+                _logger.LogDebug("[EnhancedFin] suivi {Key} : {Count} sorties", media_key, count);
+            }
+            catch (Exception ex)
+            {
+                // Le suivi est enregistré, c'est ce qui compte. L'entretien quotidien
+                // repassera sur ce média, sa dernière date de rafraîchissement étant
+                // restée nulle.
+                _logger.LogWarning(ex, "[EnhancedFin] sorties de {Key} non récupérées", media_key);
+            }
         }
 
         // DELETE /api/EnhancedFin/v1/me/follows/{mediaKey}
@@ -119,10 +200,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
         // GET /api/EnhancedFin/v1/me/calendar?from=2026-09-01&to=2026-09-30
         [HttpGet("me/calendar")]
-        public ActionResult calendar([FromQuery] string? from = null, [FromQuery] string? to = null)
+        public ActionResult<CalendarResponse> calendar(
+            [FromQuery] string? from = null, [FromQuery] string? to = null)
         {
-            var user_id = current_user_id();
-            if (user_id is null) return not_authenticated();
+            var user = current_user();
+            if (user is null) return not_authenticated();
+
+            var user_id = user.Value.ToString("D");
 
             // Par défaut : la quinzaine en cours, la fenêtre qu'affiche le front actuel.
             var start = parse_date(from) ?? DateTime.UtcNow.Date;
@@ -151,46 +235,47 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             cmd.Parameters.AddWithValue("$from", start.ToString("yyyy-MM-dd"));
             cmd.Parameters.AddWithValue("$to", end.ToString("yyyy-MM-dd"));
 
+            // Index résolu une fois pour toute la réponse : une résolution par ligne
+            // ferait une requête bibliothèque par sortie. Il porte l'utilisateur, donc
+            // ne révèle pas les bibliothèques auxquelles il n'a pas accès.
+            var in_library = _library.index(user.Value);
+
             // Regroupement par jour fait ici : le client n'a plus qu'à afficher.
-            var by_day = new Dictionary<string, List<object>>();
+            var by_day = new Dictionary<string, List<CalendarRelease>>(StringComparer.Ordinal);
             using var rd = cmd.ExecuteReader();
             while (rd.Read())
             {
                 var day = rd.GetString(0)[..10];
                 if (!by_day.TryGetValue(day, out var releases))
-                    by_day[day] = releases = new List<object>();
+                    by_day[day] = releases = new List<CalendarRelease>();
 
+                var media_key = rd.GetString(1);
                 var media_type = rd.GetString(7);
+                in_library.TryGetValue(media_key, out var match);
 
-                releases.Add(new
-                {
-                    mediaKey = rd.GetString(1),
-                    mediaType = media_type,
-                    season = rd.GetInt32(2),
-                    episode = rd.GetInt32(3),
-                    // Nul pour un film : `refresh_movie_release` y recopie le titre
-                    // faute de mieux, mais `title` le porte déjà juste en dessous.
-                    // Le répéter ici ferait afficher deux fois la même chose au
-                    // client qui traite la ligne comme un épisode.
-                    episodeName = media_type == "movie" || rd.IsDBNull(4) ? null : rd.GetString(4),
-                    title = rd.GetString(5),
-                    posterUrl = rd.IsDBNull(6) ? null : rd.GetString(6),
-                });
+                releases.Add(new CalendarRelease(
+                    mediaKey: media_key,
+                    mediaType: media_type,
+                    season: rd.GetInt32(2),
+                    episode: rd.GetInt32(3),
+                    episodeName: media_type == "movie" || rd.IsDBNull(4) ? null : rd.GetString(4),
+                    title: rd.GetString(5),
+                    posterUrl: rd.IsDBNull(6) ? null : rd.GetString(6),
+                    inLibrary: match is not null,
+                    jellyfinId: match?.JellyfinId.ToString("D")));
             }
 
             // Les dates sont au format ISO, donc l'ordre lexicographique est l'ordre
             // chronologique : un tri ordinal suffit.
             var days = by_day.Keys
                 .OrderBy(day => day, StringComparer.Ordinal)
-                .Select(day => (object)new { date = day, releases = by_day[day] })
+                .Select(day => new CalendarDay(day, by_day[day]))
                 .ToList();
 
-            return Ok(new
-            {
-                from = start.ToString("yyyy-MM-dd"),
-                to = end.ToString("yyyy-MM-dd"),
-                days,
-            });
+            return Ok(new CalendarResponse(
+                from: start.ToString("yyyy-MM-dd"),
+                to: end.ToString("yyyy-MM-dd"),
+                days: days));
         }
 
         /// <summary>
