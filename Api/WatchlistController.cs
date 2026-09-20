@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using Jellyfin.Plugin.EnhancedFin.Data;
 using Jellyfin.Plugin.EnhancedFin.Services;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
 
 namespace Jellyfin.Plugin.EnhancedFin.Api
 {
@@ -28,7 +30,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         string? backdropUrl,
         int? rating,
         bool inLibrary,
-        string? jellyfinId);
+        string? jellyfinId,
+        /// Identifiants de genre TMDB, pour que le client puisse répartir la liste
+        /// sans la redemander. `?genre=` sait **inclure** un genre, pas en exclure
+        /// un : sans ce champ, une catégorie « séries sauf animation » imposerait
+        /// plusieurs requêtes pour découper une liste déjà en main.
+        IReadOnlyList<int> genreIds);
 
     /// <summary>
     /// Watchlist : ce que l'utilisateur veut regarder.
@@ -94,14 +101,15 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             // ferait une requête bibliothèque par entrée de watchlist.
             var in_library = _library.index(user.Value);
 
-            var items = new List<WatchlistItem>();
+            var rows = new List<WatchlistItem>();
+
             using var rd = cmd.ExecuteReader();
             while (rd.Read())
             {
                 var media_key = rd.GetString(0);
                 in_library.TryGetValue(media_key, out var match);
 
-                items.Add(new WatchlistItem(
+                rows.Add(new WatchlistItem(
                     mediaKey: media_key,
                     addedAt: rd.GetString(1),
                     mediaType: rd.GetString(2),
@@ -111,11 +119,62 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                     backdropUrl: rd.IsDBNull(6) ? null : rd.GetString(6),
                     rating: rd.IsDBNull(7) ? (int?)null : rd.GetInt32(7),
                     inLibrary: match is not null,
-                    jellyfinId: match?.JellyfinId.ToString("D")));
+                    jellyfinId: match?.JellyfinId.ToString("D"),
+                    genreIds: Array.Empty<int>()));
             }
             rd.Close();
 
+            // Les genres sont lus **après** la page, en une requête pour tout le lot :
+            // une sous-requête par ligne en ferait une par entrée de watchlist.
+            var genres = read_genres(con, rows.ConvertAll(r => r.mediaKey));
+
+            var items = rows.ConvertAll(r => r with
+            {
+                genreIds = genres.TryGetValue(r.mediaKey, out var ids) ? ids : Array.Empty<int>(),
+            });
+
             return Ok(new ListResponse<WatchlistItem>(items, count(con, "SELECT COUNT(*)" + where, cmd)));
+        }
+
+        /// <summary>
+        /// Genres d'un lot de médias, en une requête.
+        ///
+        /// Ordre `genre_id`, le même que celui de `/media/{key}` : deux listes de
+        /// genres du même média ne doivent pas sortir dans deux ordres différents.
+        ///
+        /// Parametres :
+        /// - con (SqliteConnection) : connexion ouverte
+        /// - media_keys (List&lt;string&gt;) : clés de la page
+        ///
+        /// Output :
+        /// - genres (Dictionary) : clé -&gt; identifiants de genre ; un média sans
+        ///   genre connu n'y figure pas
+        /// </summary>
+        private static Dictionary<string, List<int>> read_genres(
+            SqliteConnection con, List<string> media_keys)
+        {
+            var genres = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+            if (media_keys.Count == 0) return genres;
+
+            var placeholders = string.Join(",", media_keys.Select((_, i) => $"$k{i}"));
+
+            using var cmd = con.CreateCommand();
+            cmd.CommandText =
+                $"SELECT media_key, genre_id FROM media_genre WHERE media_key IN ({placeholders}) ORDER BY genre_id";
+            for (var i = 0; i < media_keys.Count; i++)
+                cmd.Parameters.AddWithValue($"$k{i}", media_keys[i]);
+
+            using var rd = cmd.ExecuteReader();
+            while (rd.Read())
+            {
+                var media_key = rd.GetString(0);
+                if (!genres.TryGetValue(media_key, out var ids))
+                    genres[media_key] = ids = new List<int>();
+
+                ids.Add(rd.GetInt32(1));
+            }
+
+            return genres;
         }
 
         // PUT /api/EnhancedFin/v1/me/watchlist/{mediaKey}
