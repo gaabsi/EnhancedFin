@@ -68,7 +68,11 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         // Les séries n'ont presque jamais de `credits` exploitable : leur casting
         // vit dans `aggregate_credits`, agrégé sur toutes les saisons.
         [property: JsonPropertyName("aggregate_credits")] TmdbAggregateCredits? AggregateCredits = null,
-        [property: JsonPropertyName("vote_count")] int? VoteCount = null)
+        [property: JsonPropertyName("vote_count")] int? VoteCount = null,
+        // Renseigné par les seules listes mixtes — `/trending/all/week` rend films,
+        // séries **et** personnes dans le même tableau. Nul partout ailleurs, le type
+        // étant alors connu de l'appelant.
+        [property: JsonPropertyName("media_type")] string? MediaType = null)
     {
         /// <summary>
         /// Logo à retenir, par ordre de préférence : français, anglais, puis sans
@@ -246,6 +250,16 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// </summary>
         private static readonly TimeSpan _person_ttl = TimeSpan.FromHours(12);
 
+        /// <summary>
+        /// Durée de vie d'une page de tendances.
+        ///
+        /// Le classement TMDB est hebdomadaire : une heure est largement en deçà de sa
+        /// fréquence de changement. Surtout, cette liste est **la même pour tous les
+        /// utilisateurs** — c'est le brut TMDB qui est mis en cache, l'état personnel
+        /// (note, watchlist, bibliothèque) étant ajouté après, par appelant.
+        /// </summary>
+        private static readonly TimeSpan _trending_ttl = TimeSpan.FromHours(1);
+
         private readonly ILogger<TmdbClient> _logger;
 
         public TmdbClient(ILogger<TmdbClient> logger)
@@ -283,6 +297,40 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             // et les recherches sans réponse remplirait le cache de bruit fabriqué
             // depuis l'extérieur, en évinçant les entrées utiles.
             if (results.Count > 0) put(cache_key, results);
+
+            return results;
+        }
+
+        /// <summary>
+        /// Une page des tendances de la semaine, films et séries mélangés.
+        ///
+        /// `/trending/all/week` plutôt que `/trending/movie` puis `/trending/tv` : un
+        /// seul aller-retour, et surtout un classement **commun** aux deux types. Deux
+        /// listes séparées ne s'ordonnent pas entre elles — c'est le piège déjà
+        /// rencontré sur `/search`, où les séries se retrouvaient derrière tous les
+        /// films. TMDB y joint `genre_ids`, ce qui rend le filtre « animés »
+        /// calculable sans requête de plus.
+        ///
+        /// Les personnes, que cette route rend aussi, sont écartées par l'appelant :
+        /// ici on ne fait que rapporter ce que TMDB renvoie.
+        ///
+        /// Parametres :
+        /// - page (int) : numéro de page TMDB, à partir de 1
+        ///
+        /// Output :
+        /// - results (List&lt;TmdbItem&gt;) : items de la page, liste vide en cas d'échec
+        /// </summary>
+        public async Task<List<TmdbItem>> trending(int page)
+        {
+            var cache_key = $"trending|week|{page}";
+            if (_cache.TryGetValue(cache_key, out List<TmdbItem>? hit) && hit is not null) return hit;
+
+            var res = await fetch<TmdbSearchResponse>("/trending/all/week", $"&page={page}");
+            var results = res?.Results ?? new List<TmdbItem>();
+
+            // Comme pour la recherche : une page vide n'est pas mise en cache, sans quoi
+            // un incident réseau figerait une liste vide pendant une heure.
+            if (results.Count > 0) put(cache_key, results, _trending_ttl);
 
             return results;
         }
@@ -423,7 +471,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// Sert à détecter les titres « français » qui sont en réalité le titre
         /// original japonais, chinois ou coréen.
         /// </summary>
-        private static bool is_non_latin(string text)
+        /// <remarks>
+        /// Public parce que les listes de découverte s'en servent aussi : `get_item`
+        /// peut se replier sur l'anglais, mais une liste de vingt items ne le peut
+        /// pas — ce serait un aller-retour par ligne. Elle écarte donc l'item, comme
+        /// le fait le front web.
+        /// </remarks>
+        public static bool is_non_latin(string text)
         {
             foreach (var c in text)
                 if (c > 0x2FFF) return true;

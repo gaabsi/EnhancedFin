@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Net.Mime;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.EnhancedFin.Data;
@@ -50,8 +51,16 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     [Produces(MediaTypeNames.Application.Json)]
     public abstract class EnhancedFinController : ControllerBase
     {
-        /// <summary>Nombre maximum d'items qu'une route de liste accepte de renvoyer.</summary>
-        protected const int MaxPageSize = 200;
+        /// <summary>
+        /// Nombre maximum d'items qu'une route de liste accepte de renvoyer.
+        ///
+        /// 500 et non 200 : les 234 notes de la production étaient tronquées, ce qui
+        /// ne se voyait pas tant que « Mes notes » n'était qu'un aperçu. La section
+        /// étant désormais dépliable, la troncature deviendrait visible — et
+        /// inexplicable pour l'utilisateur. La borne reste là pour ce qu'elle fait
+        /// vraiment : empêcher qu'une requête rende une table entière.
+        /// </summary>
+        protected const int MaxPageSize = 500;
 
         /// <summary>Longueur maximale d'une valeur du client renvoyée en écho dans une erreur.</summary>
         private const int MaxEchoLength = 64;
@@ -295,6 +304,71 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 cmd.Parameters.AddWithValue(p.ParameterName, p.Value ?? DBNull.Value);
 
             return Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// Ce que l'appelant a déjà fait d'un média.
+        ///
+        /// `Known` dit que le média est au **référentiel** (noté, vu, en watchlist…),
+        /// ce qui est indépendant de sa présence en bibliothèque : un film noté peut
+        /// avoir quitté le serveur, un film présent peut n'avoir jamais été touché.
+        /// </summary>
+        protected record MyState(int? Rating, bool InWatchlist, bool Following, bool Known);
+
+        /// <summary>
+        /// État de l'appelant sur un lot de médias, en une requête.
+        ///
+        /// Les listes de découverte rendent une vingtaine de candidats dont il faut
+        /// savoir, pour chacun, s'il est noté ou en watchlist. Une sous-requête par
+        /// ligne ferait autant d'allers-retours SQLite que d'items.
+        ///
+        /// Le `LEFT JOIN` part de `media` : une clé absente du référentiel n'a par
+        /// construction ni note ni watchlist, et ne figure simplement pas au résultat.
+        ///
+        /// Parametres :
+        /// - con (SqliteConnection) : connexion ouverte
+        /// - user_id (string) : identité de l'appelant, en forme canonique
+        /// - media_keys (IEnumerable&lt;string&gt;) : clés à interroger
+        ///
+        /// Output :
+        /// - states (Dictionary) : clé -&gt; état ; une clé inconnue est absente
+        /// </summary>
+        /// <remarks>
+        /// `IN (...)` à paramètres liés, et non un `UNION ALL` fabriqué : la seule
+        /// borne est celle des paramètres liés (32 766), là où un SELECT composé
+        /// plafonne à 500 branches. Les clés viennent de TMDB, pas de l'appelant,
+        /// mais restent liées — une requête paramétrée ne se contourne pas.
+        /// </remarks>
+        protected static Dictionary<string, MyState> read_my_state(
+            SqliteConnection con, string user_id, IEnumerable<string> media_keys)
+        {
+            var keys = media_keys.ToList();
+            var states = new Dictionary<string, MyState>(StringComparer.Ordinal);
+            if (keys.Count == 0) return states;
+
+            var placeholders = string.Join(",", keys.Select((_, i) => $"$k{i}"));
+
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = $@"
+                SELECT m.media_key,
+                       (SELECT score FROM rating    WHERE user_id = $u AND media_key = m.media_key),
+                       (SELECT 1     FROM watchlist WHERE user_id = $u AND media_key = m.media_key),
+                       (SELECT 1     FROM follow    WHERE user_id = $u AND media_key = m.media_key)
+                FROM media m
+                WHERE m.media_key IN ({placeholders})";
+            cmd.Parameters.AddWithValue("$u", user_id);
+            for (var i = 0; i < keys.Count; i++)
+                cmd.Parameters.AddWithValue($"$k{i}", keys[i]);
+
+            using var rd = cmd.ExecuteReader();
+            while (rd.Read())
+                states[rd.GetString(0)] = new MyState(
+                    Rating: rd.IsDBNull(1) ? (int?)null : rd.GetInt32(1),
+                    InWatchlist: !rd.IsDBNull(2),
+                    Following: !rd.IsDBNull(3),
+                    Known: true);
+
+            return states;
         }
 
         /// <summary>Tronque une valeur venue du client avant de la renvoyer en écho.</summary>
