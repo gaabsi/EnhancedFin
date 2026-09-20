@@ -7,6 +7,7 @@ using Jellyfin.Plugin.EnhancedFin.Services;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
 
 namespace Jellyfin.Plugin.EnhancedFin.Api
 {
@@ -143,6 +144,33 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         }
 
 
+        /// <summary>
+        /// Un média vu, avant filtrage et pagination — quelle que soit la source.
+        ///
+        /// Les champs de présentation sont nullables parce qu'un média vu sur le
+        /// serveur mais jamais noté **n'est pas au référentiel** : Jellyfin en donne
+        /// alors le titre et l'année, mais pas d'affiche TMDB. Le client retombe dans
+        /// ce cas sur l'image du serveur, qu'il atteint par `jellyfinId`.
+        /// </summary>
+        private record PendingCandidate(
+            string MediaKey,
+            string MediaType,
+            string Title,
+            int? Year,
+            string? PosterUrl,
+            string? BackdropUrl,
+            int WatchedEpisodes,
+            /// Plus rien à voir : tous les épisodes d'une série, ou le film lui-même.
+            /// Toujours faux pour la source `playback`, qui ne connaît pas le nombre
+            /// total d'épisodes d'une œuvre.
+            bool IsComplete,
+            /// Telle qu'elle est **stockée**, et non reformatée : les dates migrées
+            /// viennent verbatim de l'ancienne base, dont le format n'est pas garanti
+            /// identique à celui que produit le plugin. Les reparser pour les réémettre
+            /// changerait la valeur sur le fil sans rien apporter — c'est
+            /// <see cref="sort_key"/> qui porte le tri.
+            string LastWatchedAt);
+
         // GET /api/EnhancedFin/v1/me/ratings/pending
         // Vu mais pas encore noté. Remplace l'ancien `ToRate`.
         [HttpGet("me/ratings/pending")]
@@ -158,60 +186,263 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
             var user_id = user.Value.ToString("D");
 
-            // Une requête là où l'ancien `ToRate` agrégeait deux tables puis faisait
-            // un appel TMDB par item pour retrouver titre et affiche. Le référentiel
-            // les porte déjà.
-            var body = @"
+            using var con = _db.open();
+
+            // Deux sources, et il en faut deux : la table `playback` ne connaît que ce
+            // qu'un client lui a explicitement envoyé — c'est-à-dire, aujourd'hui, les
+            // seules données migrées. Jellyfin, lui, sait ce qui a réellement été lu
+            // sur le serveur, mais ignore tout des médias sans fichier. C'est
+            // exactement le découpage qu'opère le front web.
+            var candidates = read_playback_candidates(con, user_id);
+            merge_library_candidates(con, user.Value, candidates);
+
+            var rated = read_rated_keys(con, user_id);
+
+            // Le tri porte sur la fusion, donc il ne peut plus être fait en SQL : la
+            // pagination devient une découpe en mémoire. Le volume le permet — quelques
+            // centaines de médias vus, contre 2 678 lignes de progression brutes que le
+            // regroupement réduit d'autant.
+            var retained = candidates.Values
+                .Where(c => !rated.Contains(c.MediaKey))
+                .Where(is_rateable)
+                .OrderByDescending(c => sort_key(c.LastWatchedAt))
+                .ToList();
+
+            var in_library = _library.index(user.Value);
+
+            var items = retained
+                .Skip(page.Offset)
+                .Take(page.Limit)
+                .Select(c =>
+                {
+                    in_library.TryGetValue(c.MediaKey, out var match);
+
+                    return new PendingRatingItem(
+                        mediaKey: c.MediaKey,
+                        mediaType: c.MediaType,
+                        title: c.Title,
+                        year: c.Year,
+                        posterUrl: c.PosterUrl,
+                        watchedEpisodes: c.WatchedEpisodes,
+                        lastWatchedAt: c.LastWatchedAt,
+                        backdropUrl: c.BackdropUrl,
+                        inLibrary: match is not null,
+                        jellyfinId: match?.JellyfinId.ToString("D"));
+                })
+                .ToList();
+
+            return Ok(new ListResponse<PendingRatingItem>(items, retained.Count));
+        }
+
+        /// <summary>
+        /// Assez vu pour être noté.
+        ///
+        /// Un film suffit. Une série demande cinq épisodes — seuil repris de l'ancien
+        /// plugin, parce que noter une série sur un épisode n'a pas de sens —
+        /// **ou bien d'être terminée**.
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ La clause « terminée » n'est pas un confort : sans elle, une œuvre plus
+        /// courte que le seuil ne pouvait **jamais** être proposée, même vue de bout
+        /// en bout. Toutes les mini-séries de moins de cinq épisodes étaient invisibles
+        /// pour cette section, à vie. Constaté sur *Dans leur regard* : quatre
+        /// épisodes, intégralement vue, jamais proposée.
+        ///
+        /// Le seuil garde son rôle — écarter une série longue à peine commencée — mais
+        /// ne décide plus seul.
+        /// </remarks>
+        private static bool is_rateable(PendingCandidate candidate) =>
+            candidate.MediaType == "movie"
+            || candidate.IsComplete
+            || candidate.WatchedEpisodes >= MinEpisodesForTv;
+
+        /// <summary>
+        /// Médias vus d'après la table `playback` du plugin.
+        ///
+        /// C'est la seule source qui connaisse les médias **sans fichier** sur le
+        /// serveur : ce que l'ancien plugin suivait hors bibliothèque, et que la
+        /// migration a repris.
+        ///
+        /// Parametres :
+        /// - con (SqliteConnection) : connexion ouverte
+        /// - user_id (string) : identité de l'appelant
+        ///
+        /// Output :
+        /// - candidates (Dictionary) : media_key -&gt; candidat
+        /// </summary>
+        private static Dictionary<string, PendingCandidate> read_playback_candidates(
+            SqliteConnection con, string user_id)
+        {
+            var candidates = new Dictionary<string, PendingCandidate>(StringComparer.Ordinal);
+
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = @"
+                SELECT p.media_key, m.media_type, m.title, m.year, m.poster_url,
+                       m.backdrop_url, COUNT(*) AS vus, MAX(p.updated_at) AS dernier
                 FROM playback p
                 JOIN media m ON m.media_key = p.media_key
                 WHERE p.user_id = $u
                   AND " + SqlIsWatched + @"
-                  AND NOT EXISTS (SELECT 1 FROM rating r
-                                  WHERE r.user_id = $u AND r.media_key = p.media_key)
-                GROUP BY p.media_key
-                HAVING m.media_type = 'movie' OR COUNT(*) >= $min_eps";
-
-            using var con = _db.open();
-            using var cmd = con.CreateCommand();
-            cmd.CommandText = @"
-                SELECT p.media_key, m.media_type, m.title, m.year, m.poster_url,
-                       COUNT(*) AS vus, MAX(p.updated_at) AS dernier, m.backdrop_url"
-                + body + @"
-                ORDER BY dernier DESC
-                LIMIT $limit OFFSET $offset";
+                GROUP BY p.media_key";
             cmd.Parameters.AddWithValue("$u", user_id);
-            cmd.Parameters.AddWithValue("$min_eps", MinEpisodesForTv);
-            cmd.Parameters.AddWithValue("$limit", page.Limit);
-            cmd.Parameters.AddWithValue("$offset", page.Offset);
 
-            var in_library = _library.index(user.Value);
-
-            var items = new List<PendingRatingItem>();
             using var rd = cmd.ExecuteReader();
             while (rd.Read())
             {
                 var media_key = rd.GetString(0);
-                in_library.TryGetValue(media_key, out var match);
-
-                items.Add(new PendingRatingItem(
-                    mediaKey: media_key,
-                    mediaType: rd.GetString(1),
-                    title: rd.GetString(2),
-                    year: rd.IsDBNull(3) ? (int?)null : rd.GetInt32(3),
-                    posterUrl: rd.IsDBNull(4) ? null : rd.GetString(4),
-                    watchedEpisodes: rd.GetInt32(5),
-                    lastWatchedAt: rd.GetString(6),
-                    backdropUrl: rd.IsDBNull(7) ? null : rd.GetString(7),
-                    inLibrary: match is not null,
-                    jellyfinId: match?.JellyfinId.ToString("D")));
+                candidates[media_key] = new PendingCandidate(
+                    MediaKey: media_key,
+                    MediaType: rd.GetString(1),
+                    Title: rd.GetString(2),
+                    Year: rd.IsDBNull(3) ? (int?)null : rd.GetInt32(3),
+                    PosterUrl: rd.IsDBNull(4) ? null : rd.GetString(4),
+                    BackdropUrl: rd.IsDBNull(5) ? null : rd.GetString(5),
+                    WatchedEpisodes: rd.GetInt32(6),
+                    // La table ne stocke pas le nombre d'épisodes d'une série : on ne
+                    // peut pas savoir si celle-ci est terminée. Le seuil décide seul
+                    // pour les médias que seule cette source connaît.
+                    IsComplete: false,
+                    LastWatchedAt: rd.GetString(7));
             }
-            rd.Close();
 
-            // GROUP BY : le total est le nombre de **groupes**, d'où la sous-requête.
-            return Ok(new ListResponse<PendingRatingItem>(
-                items,
-                count(con, "SELECT COUNT(*) FROM (SELECT p.media_key" + body + ")", cmd)));
+            return candidates;
         }
+
+        /// <summary>
+        /// Complète les candidats avec ce que Jellyfin sait avoir été vu.
+        ///
+        /// Une clé déjà connue de `playback` est **fusionnée** et non remplacée : on
+        /// retient le plus grand nombre d'épisodes et la date la plus récente, parce
+        /// qu'aucune des deux sources n'est exhaustive. Le référentiel garde la main
+        /// sur la présentation quand il porte le média, ses affiches TMDB étant plus
+        /// riches que ce que la bibliothèque expose ici.
+        ///
+        /// Parametres :
+        /// - con (SqliteConnection) : connexion ouverte
+        /// - user (Guid) : utilisateur dont on applique les droits
+        /// - into (Dictionary) : candidats à compléter, modifié sur place
+        /// </summary>
+        private void merge_library_candidates(
+            SqliteConnection con, Guid user, Dictionary<string, PendingCandidate> into)
+        {
+            var watched = _library.watched(user);
+            if (watched.Count == 0) return;
+
+            // Les médias vus que le référentiel connaît déjà sans les avoir en
+            // `playback` : notés autrefois, mis en watchlist… Leurs affiches valent
+            // mieux que rien, d'où cette relecture en une requête.
+            var known = read_media_rows(con, watched.Keys.Where(k => !into.ContainsKey(k)));
+
+            foreach (var (media_key, seen) in watched)
+            {
+                if (into.TryGetValue(media_key, out var existing))
+                {
+                    into[media_key] = existing with
+                    {
+                        WatchedEpisodes = Math.Max(existing.WatchedEpisodes, seen.WatchedEpisodes),
+                        // `playback` ne peut que l'ignorer, Jellyfin le sait : la
+                        // fusion ne doit donc jamais faire retomber ce drapeau.
+                        IsComplete = existing.IsComplete || seen.IsComplete,
+                        LastWatchedAt = sort_key(existing.LastWatchedAt) >= seen.LastPlayedAt
+                            ? existing.LastWatchedAt
+                            : iso(seen.LastPlayedAt),
+                    };
+                    continue;
+                }
+
+                if (MediaCatalog.split(media_key) is not { } parts) continue;
+
+                known.TryGetValue(media_key, out var row);
+
+                into[media_key] = new PendingCandidate(
+                    MediaKey: media_key,
+                    MediaType: parts.Type,
+                    // Jellyfin est le repli, pas l'inverse : un titre du référentiel
+                    // vient de TMDB et reste cohérent avec le reste de l'Explorer.
+                    Title: row?.Title ?? seen.Name,
+                    Year: row?.Year ?? seen.Year,
+                    PosterUrl: row?.PosterUrl,
+                    BackdropUrl: row?.BackdropUrl,
+                    WatchedEpisodes: seen.WatchedEpisodes,
+                    IsComplete: seen.IsComplete,
+                    LastWatchedAt: iso(seen.LastPlayedAt));
+            }
+        }
+
+        /// <summary>Ce que le référentiel porte sur un média, pour la présentation.</summary>
+        private record MediaRow(string? Title, int? Year, string? PosterUrl, string? BackdropUrl);
+
+        /// <summary>
+        /// Lit les fiches du référentiel pour un lot de clés, en une requête.
+        ///
+        /// Parametres :
+        /// - con (SqliteConnection) : connexion ouverte
+        /// - media_keys (IEnumerable&lt;string&gt;) : clés à lire
+        ///
+        /// Output :
+        /// - rows (Dictionary) : clé -&gt; fiche ; une clé absente du référentiel
+        ///   n'y figure simplement pas
+        /// </summary>
+        private static Dictionary<string, MediaRow> read_media_rows(
+            SqliteConnection con, IEnumerable<string> media_keys)
+        {
+            var keys = media_keys.ToList();
+            var rows = new Dictionary<string, MediaRow>(StringComparer.Ordinal);
+            if (keys.Count == 0) return rows;
+
+            var placeholders = string.Join(",", keys.Select((_, i) => $"$k{i}"));
+
+            using var cmd = con.CreateCommand();
+            cmd.CommandText =
+                $"SELECT media_key, title, year, poster_url, backdrop_url FROM media WHERE media_key IN ({placeholders})";
+            for (var i = 0; i < keys.Count; i++)
+                cmd.Parameters.AddWithValue($"$k{i}", keys[i]);
+
+            using var rd = cmd.ExecuteReader();
+            while (rd.Read())
+                rows[rd.GetString(0)] = new MediaRow(
+                    Title: rd.IsDBNull(1) ? null : rd.GetString(1),
+                    Year: rd.IsDBNull(2) ? (int?)null : rd.GetInt32(2),
+                    PosterUrl: rd.IsDBNull(3) ? null : rd.GetString(3),
+                    BackdropUrl: rd.IsDBNull(4) ? null : rd.GetString(4));
+
+            return rows;
+        }
+
+        /// <summary>Clés des médias que l'appelant a déjà notés.</summary>
+        private static HashSet<string> read_rated_keys(SqliteConnection con, string user_id)
+        {
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = "SELECT media_key FROM rating WHERE user_id = $u";
+            cmd.Parameters.AddWithValue("$u", user_id);
+
+            using var rd = cmd.ExecuteReader();
+            while (rd.Read()) keys.Add(rd.GetString(0));
+
+            return keys;
+        }
+
+        /// <summary>Date d'une source Jellyfin, au format que le plugin émet partout.</summary>
+        private static string iso(DateTime value) =>
+            value.ToString("o", CultureInfo.InvariantCulture);
+
+        /// <summary>
+        /// Clé de tri d'une date stockée, sans jamais lever.
+        ///
+        /// Sert **uniquement** à ordonner : la chaîne émise reste celle de la base. Un
+        /// tri ordinal ne suffirait pas ici, les deux sources n'écrivant pas forcément
+        /// le même format — les dates migrées viennent verbatim de l'ancienne base.
+        /// Une valeur illisible relègue l'item en fin de liste plutôt que de faire
+        /// tomber la route.
+        /// </summary>
+        private static DateTime sort_key(string value) =>
+            DateTime.TryParse(value, CultureInfo.InvariantCulture,
+                              DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                              out var parsed)
+                ? parsed
+                : DateTime.MinValue;
 
         // PUT /api/EnhancedFin/v1/me/ratings/{mediaKey}
         // Idempotent : rejouer l'appel ne crée pas de doublon (upsert sur la PK).
