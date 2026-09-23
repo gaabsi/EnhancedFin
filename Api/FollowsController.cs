@@ -74,9 +74,11 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         [HttpGet("me/follows")]
         public ActionResult list([FromQuery] int? limit = null, [FromQuery] int? offset = null)
         {
-            var user_id = current_user_id();
-            if (user_id is null) return not_authenticated();
+            var user = current_user();
+            if (user is null) return not_authenticated();
             if (page_of(limit, offset) is not { } page) return invalid_page();
+
+            var user_id = user.Value.ToString("D");
 
             const string where = @"
                 FROM follow f JOIN media m ON m.media_key = f.media_key
@@ -96,13 +98,20 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             cmd.Parameters.AddWithValue("$limit", page.Limit);
             cmd.Parameters.AddWithValue("$offset", page.Offset);
 
+            // Index résolu une fois pour toute la réponse, comme pour le calendrier :
+            // une résolution par ligne ferait une requête bibliothèque par suivi.
+            var in_library = _library.index(user.Value);
+
             var items = new List<object>();
             using var rd = cmd.ExecuteReader();
             while (rd.Read())
             {
+                var media_key = rd.GetString(0);
+                in_library.TryGetValue(media_key, out var match);
+
                 items.Add(new
                 {
-                    mediaKey = rd.GetString(0),
+                    mediaKey = media_key,
                     addedAt = rd.GetString(1),
                     mediaType = rd.GetString(2),
                     title = rd.GetString(3),
@@ -110,6 +119,11 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                     posterUrl = rd.IsDBNull(5) ? null : rd.GetString(5),
                     // Prochaine sortie à venir : ce que l'UI affiche sous le titre.
                     nextAirDate = rd.IsDBNull(6) ? null : rd.GetString(6),
+                    // Sans eux, le client ouvre une fiche de découverte pour une série
+                    // que ce serveur possède — bouton Lire grisé, pas d'épisodes. Les
+                    // autres routes de liste les rendent déjà.
+                    inLibrary = match is not null,
+                    jellyfinId = match?.JellyfinId.ToString("D"),
                 });
             }
             rd.Close();
