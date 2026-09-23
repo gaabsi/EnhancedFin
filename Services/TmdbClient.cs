@@ -189,13 +189,21 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         [property: JsonPropertyName("episode_number")] int EpisodeNumber,
         [property: JsonPropertyName("season_number")] int SeasonNumber,
         [property: JsonPropertyName("name")] string? Name,
-        [property: JsonPropertyName("air_date")] string? AirDate);
+        [property: JsonPropertyName("air_date")] string? AirDate,
+        // Liste d'épisodes de la fiche ; le calendrier n'en lit que les dates.
+        [property: JsonPropertyName("overview")] string? Overview = null,
+        [property: JsonPropertyName("still_path")] string? StillPath = null,
+        [property: JsonPropertyName("runtime")] int? Runtime = null);
 
     public record TmdbSeason(
-        [property: JsonPropertyName("episodes")] List<TmdbEpisode>? Episodes);
+        [property: JsonPropertyName("episodes")] List<TmdbEpisode>? Episodes,
+        [property: JsonPropertyName("name")] string? Name = null);
 
     public record TmdbSeasonRef(
-        [property: JsonPropertyName("season_number")] int SeasonNumber);
+        [property: JsonPropertyName("season_number")] int SeasonNumber,
+        [property: JsonPropertyName("name")] string? Name = null,
+        [property: JsonPropertyName("episode_count")] int? EpisodeCount = null,
+        [property: JsonPropertyName("poster_path")] string? PosterPath = null);
 
     public record TmdbTvDetail(
         [property: JsonPropertyName("seasons")] List<TmdbSeasonRef>? Seasons);
@@ -274,6 +282,16 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// recherche, l'enrichissement et la tâche d'entretien, pour tout le monde.
         /// </summary>
         private static readonly TimeSpan _person_ttl = TimeSpan.FromHours(12);
+
+        /// <summary>
+        /// Durée de vie d'une saison au cache.
+        ///
+        /// Plus courte que `_person_ttl` : le calendrier lit les mêmes saisons, et un
+        /// épisode fraîchement annoncé ne doit pas mettre une demi-journée à y
+        /// apparaître. Assez longue pour qu'ouvrir une fiche puis la liste de ses
+        /// épisodes ne reparte pas vers TMDB.
+        /// </summary>
+        private static readonly TimeSpan _season_ttl = TimeSpan.FromHours(6);
 
         /// <summary>
         /// Durée de vie d'une page de tendances.
@@ -442,19 +460,71 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         {
             var episodes = new List<TmdbEpisode>();
 
-            var detail = await fetch<TmdbTvDetail>($"/tv/{tmdb_id}");
-            if (detail?.Seasons is null) return episodes;
-
-            foreach (var season in detail.Seasons)
+            foreach (var season in await get_seasons(tmdb_id))
             {
-                // Saison 0 = épisodes spéciaux, hors calendrier des sorties régulières.
-                if (season.SeasonNumber == 0) continue;
-
-                var data = await fetch<TmdbSeason>($"/tv/{tmdb_id}/season/{season.SeasonNumber}");
+                var data = await get_season(tmdb_id, season.SeasonNumber);
                 if (data?.Episodes is not null) episodes.AddRange(data.Episodes);
             }
 
             return episodes;
+        }
+
+        /// <summary>
+        /// Saisons d'une série, dans l'ordre.
+        ///
+        /// Saison 0 exclue : ce sont les épisodes spéciaux, hors calendrier des sorties
+        /// comme hors de la liste d'épisodes d'une fiche.
+        ///
+        /// Parametres :
+        /// - tmdb_id (int) : identifiant TMDB de la série
+        ///
+        /// Output :
+        /// - seasons (List&lt;TmdbSeasonRef&gt;) : saisons, liste vide si inconnue
+        /// </summary>
+        public async Task<List<TmdbSeasonRef>> get_seasons(int tmdb_id)
+        {
+            var cache_key = $"seasons|{tmdb_id}";
+            if (_cache.TryGetValue(cache_key, out List<TmdbSeasonRef>? hit) && hit is not null) return hit;
+
+            var detail = await fetch<TmdbTvDetail>($"/tv/{tmdb_id}");
+            var seasons = (detail?.Seasons ?? new List<TmdbSeasonRef>())
+                .Where(s => s.SeasonNumber > 0)
+                .OrderBy(s => s.SeasonNumber)
+                .ToList();
+
+            // Une liste vide passe par le TTL court des absences : une série annoncée
+            // peut recevoir sa première saison dans la journée.
+            put(cache_key, seasons, seasons.Count > 0 ? _season_ttl : _miss_ttl);
+            return seasons;
+        }
+
+        /// <summary>
+        /// Épisodes d'une saison : nom, synopsis, image, date, durée.
+        ///
+        /// Parametres :
+        /// - tmdb_id (int) : identifiant TMDB de la série
+        /// - season_number (int) : numéro de saison
+        ///
+        /// Output :
+        /// - season (TmdbSeason | null) : saison, null si inconnue
+        /// </summary>
+        public async Task<TmdbSeason?> get_season(int tmdb_id, int season_number)
+        {
+            var cache_key = $"season|{tmdb_id}|{season_number}";
+            if (_cache.TryGetValue(cache_key, out TmdbSeason? hit) && hit is not null) return hit;
+
+            var miss_key = $"miss|season|{tmdb_id}|{season_number}";
+            if (_cache.TryGetValue(miss_key, out _)) return null;
+
+            var season = await fetch<TmdbSeason>($"/tv/{tmdb_id}/season/{season_number}");
+            if (season is null)
+            {
+                put(miss_key, "", _miss_ttl);
+                return null;
+            }
+
+            put(cache_key, season, _season_ttl);
+            return season;
         }
 
         /// <summary>

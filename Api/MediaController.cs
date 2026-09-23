@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.EnhancedFin.Data;
@@ -23,12 +24,17 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         private readonly Db _db;
         private readonly MediaCatalog _catalog;
         private readonly MdblistClient _mdblist;
+        private readonly TmdbClient _tmdb;
+        private readonly SeerrClient _seerr;
 
-        public MediaController(Db db, MediaCatalog catalog, MdblistClient mdblist)
+        public MediaController(
+            Db db, MediaCatalog catalog, MdblistClient mdblist, TmdbClient tmdb, SeerrClient seerr)
         {
             _db = db;
             _catalog = catalog;
             _mdblist = mdblist;
+            _tmdb = tmdb;
+            _seerr = seerr;
         }
 
         // GET /api/EnhancedFin/v1/media/{mediaKey}?detail=true&enrich=true
@@ -136,16 +142,149 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             {
                 response["detail"] = read_detail(con, mediaKey);
 
+                // MDBList et Seerr sont indépendants : lancés ensemble, la fiche
+                // n'attend que le plus lent des deux au lieu de leur somme.
+                var scores_task = _mdblist.get_scores(mediaKey);
+                var availability_task = MediaCatalog.split(mediaKey) is { Type: "tv" } tv
+                    ? _seerr.tv_availability(tv.TmdbId)
+                    : Task.FromResult<SeerrAvailability?>(null);
+
                 // Notes RT du bloc « infos », en cache 7 jours. Un objet anonyme en
                 // camelCase, comme le reste de la route : un record sortirait en
                 // PascalCase (`RtCritics`).
-                var scores = await _mdblist.get_scores(mediaKey);
+                var scores = await scores_task;
                 response["scores"] = scores is null
                     ? null
                     : new { rtCritics = scores.RtCritics, rtAudience = scores.RtAudience };
+
+                // Série : disponibilité selon Seerr (5 = complète). Absent si Seerr
+                // n'est pas configuré ou n'a pas répondu — le client n'affiche alors
+                // pas de carte « saisons manquantes », plutôt qu'une carte à tort.
+                if (await availability_task is { } availability)
+                {
+                    response["seerr"] = new { status = availability.Status };
+                }
             }
 
             return Ok(response);
+        }
+
+        // GET /api/EnhancedFin/v1/media/{mediaKey}/seasons
+        //
+        // Saisons d'une série, avec le nombre d'épisodes vus par l'appelant. Lecture
+        // seule : ne fait pas entrer la série au référentiel.
+        [HttpGet("media/{mediaKey}/seasons")]
+        public async Task<ActionResult> seasons(string mediaKey)
+        {
+            var user_id = current_user_id();
+            if (user_id is null) return not_authenticated();
+            if (MediaCatalog.split(mediaKey) is not { Type: "tv" } parts)
+                return problem(400, "Clé de série invalide", "attendu : 'tv:{tmdb_id}'.");
+
+            var watched = watched_count_by_season(user_id, mediaKey);
+            var items = (await _tmdb.get_seasons(parts.TmdbId))
+                .Select(s => new
+                {
+                    number = s.SeasonNumber,
+                    name = s.Name,
+                    episodeCount = s.EpisodeCount,
+                    posterUrl = TmdbClient.image_url(s.PosterPath),
+                    watchedCount = watched.GetValueOrDefault(s.SeasonNumber),
+                })
+                .ToList();
+
+            return Ok(new { mediaKey, items });
+        }
+
+        // GET /api/EnhancedFin/v1/media/{mediaKey}/seasons/{season}
+        //
+        // Épisodes d'une saison (TMDB), chacun avec son état « vu » pour l'appelant.
+        [HttpGet("media/{mediaKey}/seasons/{season:int}")]
+        public async Task<ActionResult> season(string mediaKey, int season)
+        {
+            var user_id = current_user_id();
+            if (user_id is null) return not_authenticated();
+            if (MediaCatalog.split(mediaKey) is not { Type: "tv" } parts)
+                return problem(400, "Clé de série invalide", "attendu : 'tv:{tmdb_id}'.");
+            if (season < 1) return problem(400, "Saison invalide", "le numéro de saison commence à 1.");
+
+            var data = await _tmdb.get_season(parts.TmdbId, season);
+            if (data is null) return problem(404, "Saison inconnue", $"saison {season} introuvable sur TMDB.");
+
+            var watched = watched_episodes(user_id, mediaKey, season);
+            var episodes = (data.Episodes ?? new List<TmdbEpisode>())
+                .OrderBy(e => e.EpisodeNumber)
+                .Select(e => new
+                {
+                    number = e.EpisodeNumber,
+                    name = e.Name,
+                    // `""` pour un synopsis absent en fr-FR, comme sur les fiches.
+                    overview = string.IsNullOrWhiteSpace(e.Overview) ? null : e.Overview,
+                    stillUrl = TmdbClient.image_url(e.StillPath),
+                    airDate = string.IsNullOrWhiteSpace(e.AirDate) ? null : e.AirDate,
+                    runtime = e.Runtime,
+                    watched = watched.Contains(e.EpisodeNumber),
+                })
+                .ToList();
+
+            return Ok(new { mediaKey, number = season, name = data.Name, episodes });
+        }
+
+        /// <summary>
+        /// Nombre d'épisodes vus, par saison.
+        ///
+        /// Parametres :
+        /// - user_id (string) : utilisateur
+        /// - media_key (string) : clé de la série
+        ///
+        /// Output :
+        /// - counts (Dictionary&lt;int, int&gt;) : saison → épisodes vus
+        /// </summary>
+        private Dictionary<int, int> watched_count_by_season(string user_id, string media_key)
+        {
+            using var con = _db.open();
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = @"
+                SELECT p.season, COUNT(*) FROM playback p
+                WHERE p.user_id = $u AND p.media_key = $k AND p.season > 0
+                  AND " + SqlIsWatched + @"
+                GROUP BY p.season";
+            cmd.Parameters.AddWithValue("$u", user_id);
+            cmd.Parameters.AddWithValue("$k", media_key);
+
+            var counts = new Dictionary<int, int>();
+            using var rd = cmd.ExecuteReader();
+            while (rd.Read()) counts[rd.GetInt32(0)] = rd.GetInt32(1);
+            return counts;
+        }
+
+        /// <summary>
+        /// Numéros des épisodes vus d'une saison.
+        ///
+        /// Parametres :
+        /// - user_id (string) : utilisateur
+        /// - media_key (string) : clé de la série
+        /// - season (int) : numéro de saison
+        ///
+        /// Output :
+        /// - episodes (HashSet&lt;int&gt;) : épisodes vus
+        /// </summary>
+        private HashSet<int> watched_episodes(string user_id, string media_key, int season)
+        {
+            using var con = _db.open();
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = @"
+                SELECT p.episode FROM playback p
+                WHERE p.user_id = $u AND p.media_key = $k AND p.season = $s
+                  AND " + SqlIsWatched;
+            cmd.Parameters.AddWithValue("$u", user_id);
+            cmd.Parameters.AddWithValue("$k", media_key);
+            cmd.Parameters.AddWithValue("$s", season);
+
+            var episodes = new HashSet<int>();
+            using var rd = cmd.ExecuteReader();
+            while (rd.Read()) episodes.Add(rd.GetInt32(0));
+            return episodes;
         }
 
         /// <summary>
@@ -163,11 +302,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             Microsoft.Data.Sqlite.SqliteConnection con, string user_id, string media_key)
         {
             using var cmd = con.CreateCommand();
+            // `watched` calculé ici avec `SqlIsWatched` : un client qui le déduirait
+            // des ticks recopierait la règle, et divergerait au premier changement.
             cmd.CommandText = @"
-                SELECT season, episode, position_ticks, duration_ticks, lang, watched_at, updated_at
-                FROM playback
-                WHERE user_id = $u AND media_key = $k
-                ORDER BY updated_at DESC LIMIT 1";
+                SELECT p.season, p.episode, p.position_ticks, p.duration_ticks, p.lang,
+                       p.watched_at, p.updated_at, " + SqlIsWatched + @"
+                FROM playback p
+                WHERE p.user_id = $u AND p.media_key = $k
+                ORDER BY p.updated_at DESC LIMIT 1";
             cmd.Parameters.AddWithValue("$u", user_id);
             cmd.Parameters.AddWithValue("$k", media_key);
 
@@ -183,6 +325,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 lang = rd.IsDBNull(4) ? null : rd.GetString(4),
                 watchedAt = rd.IsDBNull(5) ? null : rd.GetString(5),
                 updatedAt = rd.GetString(6),
+                watched = rd.GetBoolean(7),
             };
         }
 

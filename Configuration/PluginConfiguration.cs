@@ -6,7 +6,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Configuration
     /// Réglages du plugin, dans
     /// `<config>/plugins/configurations/Jellyfin.Plugin.EnhancedFin.xml`.
     ///
-    /// Deux clés d'API, et toutes deux sont lues : `MediaCacheHours` et `LegacyDbPath` ont été
+    /// Trois services externes (TMDB, MDBList, Seerr), tous lus : `MediaCacheHours` et `LegacyDbPath` ont été
     /// retirés parce qu'aucune ligne de code ne les consultait — la documentation
     /// promettait un comportement que rien n'implémentait.
     ///
@@ -30,5 +30,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Configuration
         /// « infos » d'une fiche. Vide : les notes RT sont simplement absentes.
         /// </summary>
         public string MdblistApiKey { get; set; } = "";
+
+        /// <summary>
+        /// Seerr, pour savoir si une série du serveur est complète (statut 5) — la
+        /// fiche propose alors ses saisons manquantes. Vides : la carte n'apparaît pas.
+        /// </summary>
+        public string SeerrUrl { get; set; } = "";
+
+        public string SeerrApiKey { get; set; } = "";
     }
 }
