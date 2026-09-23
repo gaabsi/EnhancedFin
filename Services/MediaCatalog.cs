@@ -197,22 +197,32 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             // chaîne vide n'est pas NULL, elle écrase donc le synopsis venu de la
             // migration. Chaque passage de RefreshTask vidait ainsi une fiche.
             var overview = string.IsNullOrWhiteSpace(item.Overview) ? null : item.Overview;
+            // Même piège que le synopsis : TMDB rend `""` pour une date inconnue.
+            var release_date = string.IsNullOrWhiteSpace(item.Date) ? null : item.Date;
+            var directors = item.Directors.Count > 0 ? string.Join(", ", item.Directors) : null;
 
-            if (overview is not null || cast_json is not null)
+            // Écrite même quand TMDB n'a rien renvoyé : `facts_refreshed_at` doit être
+            // posé, sinon la fiche serait relue à chaque ouverture (`needs_facts`).
+            using (var cmd = con.CreateCommand())
             {
-                using var cmd = con.CreateCommand();
-
                 // COALESCE partout : un rafraîchissement où TMDB ne renvoie pas le
                 // casting ne doit pas effacer celui de la migration.
                 cmd.CommandText = @"
-                    INSERT INTO media_detail (media_key, overview, cast_json)
-                    VALUES ($k, $o, $cast)
+                    INSERT INTO media_detail (media_key, overview, cast_json, release_date,
+                                              directors, facts_refreshed_at)
+                    VALUES ($k, $o, $cast, $date, $directors, $now)
                     ON CONFLICT(media_key) DO UPDATE SET
-                        overview  = COALESCE(excluded.overview, media_detail.overview),
-                        cast_json = COALESCE(excluded.cast_json, media_detail.cast_json)";
+                        overview           = COALESCE(excluded.overview, media_detail.overview),
+                        cast_json          = COALESCE(excluded.cast_json, media_detail.cast_json),
+                        release_date       = COALESCE(excluded.release_date, media_detail.release_date),
+                        directors          = COALESCE(excluded.directors, media_detail.directors),
+                        facts_refreshed_at = excluded.facts_refreshed_at";
                 cmd.Parameters.AddWithValue("$k", media_key);
                 cmd.Parameters.AddWithValue("$o", (object?)overview ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("$cast", (object?)cast_json ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$date", (object?)release_date ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$directors", (object?)directors ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$now", now);
                 cmd.ExecuteNonQuery();
             }
 
@@ -346,6 +356,35 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             cmd.ExecuteNonQuery();
 
             return 1;
+        }
+
+        /// <summary>
+        /// Vrai si le média est en base mais que son bloc « infos » n'a jamais été lu.
+        ///
+        /// Rattrapage paresseux : les fiches entrées avant le bloc n'auraient jamais
+        /// leur date ni leur réalisation, puisque `ensure_exists`
+        /// s'arrête dès que le média existe. `GET /media` force alors une relecture
+        /// TMDB, **une seule fois** : `facts_refreshed_at` est posé même quand TMDB
+        /// n'a rien. Tester les champs eux-mêmes relirait à chaque ouverture un média
+        /// que TMDB ne date pas.
+        ///
+        /// Parametres :
+        /// - media_key (string) : clé du média
+        ///
+        /// Output :
+        /// - needs (bool) : vrai si la ligne existe et que le bloc n'a jamais été lu
+        /// </summary>
+        public bool needs_facts(string media_key)
+        {
+            using var con = _db.open();
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = @"
+                SELECT 1 FROM media m
+                LEFT JOIN media_detail d ON d.media_key = m.media_key
+                WHERE m.media_key = $k AND d.facts_refreshed_at IS NULL";
+            cmd.Parameters.AddWithValue("$k", media_key);
+
+            return cmd.ExecuteScalar() is not null;
         }
 
         private static bool exists(SqliteConnection con, string media_key)

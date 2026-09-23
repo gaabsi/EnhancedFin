@@ -31,6 +31,27 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
 
             ensure_schema();
             ensure_columns();
+            fix_svg_logos();
+        }
+
+        /// <summary>
+        /// Remplace les logos SVG déjà en base par leur version PNG.
+        ///
+        /// `TmdbClient.image_url` ne produit plus de SVG, mais les fiches entrées avant
+        /// en gardent un, et `ensure_exists` ne les relit pas. Idempotent : sans ligne
+        /// en `.svg`, l'`UPDATE` ne touche rien.
+        /// </summary>
+        private void fix_svg_logos()
+        {
+            using var con = new SqliteConnection(ConnectionString);
+            con.Open();
+
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = @"
+                UPDATE media
+                SET logo_url = substr(logo_url, 1, length(logo_url) - 4) || '.png'
+                WHERE logo_url LIKE '%.svg'";
+            cmd.ExecuteNonQuery();
         }
 
         /// <summary>Ouvre une connexion prête à l'emploi (clés étrangères activées).</summary>
@@ -69,6 +90,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
 
             add_column(con, "media", "vote_average", "REAL");
             add_column(con, "media", "vote_count", "INTEGER");
+            // Bloc « infos » de la fiche. `directors` en texte joint (« A, B »), comme
+            // `screenwriters` et `studios` sur la même table.
+            add_column(con, "media_detail", "release_date", "TEXT");
+            add_column(con, "media_detail", "directors", "TEXT");
+            // Dernière relecture TMDB du bloc. NULL = fiche jamais relue depuis
+            // l'ajout du bloc : `GET /media` la relit une fois, voir
+            // `MediaCatalog.needs_facts`.
+            add_column(con, "media_detail", "facts_refreshed_at", "TEXT");
         }
 
         /// <summary>
@@ -158,6 +187,18 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
                 CREATE TABLE IF NOT EXISTS genre (
                     genre_id INTEGER PRIMARY KEY,
                     name     TEXT NOT NULL
+                );
+
+                -- Notes Rotten Tomatoes venues de MDBList, en cache (voir
+                -- `MdblistClient`). Un cache, pas une donnée du référentiel : pas de
+                -- clé étrangère, il se reconstruit seul. Une ligne aux notes nulles est
+                -- un résultat, pas un manque : MDBList ne les a pas, et on ne le
+                -- redemande qu'à expiration.
+                CREATE TABLE IF NOT EXISTS media_score (
+                    media_key   TEXT PRIMARY KEY,
+                    rt_critics  INTEGER,
+                    rt_audience INTEGER,
+                    fetched_at  TEXT NOT NULL
                 );
 
                 -- (`media_alias` a été retirée : aucune lecture ni écriture nulle part.

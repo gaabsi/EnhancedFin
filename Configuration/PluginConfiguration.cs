@@ -6,7 +6,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Configuration
     /// Réglages du plugin, dans
     /// `<config>/plugins/configurations/Jellyfin.Plugin.EnhancedFin.xml`.
     ///
-    /// Un seul réglage, et il est lu : `MediaCacheHours` et `LegacyDbPath` ont été
+    /// Deux clés d'API, et toutes deux sont lues : `MediaCacheHours` et `LegacyDbPath` ont été
     /// retirés parce qu'aucune ligne de code ne les consultait — la documentation
     /// promettait un comportement que rien n'implémentait.
     ///
@@ -24,5 +24,11 @@ namespace Jellyfin.Plugin.EnhancedFin.Configuration
     {
         /// <summary>Clé API TMDB, utilisée pour alimenter le référentiel `media` et le calendrier.</summary>
         public string TmdbApiKey { get; set; } = "";
+
+        /// <summary>
+        /// Clé API MDBList, pour les notes Rotten Tomatoes (critiques et public) du bloc
+        /// « infos » d'une fiche. Vide : les notes RT sont simplement absentes.
+        /// </summary>
+        public string MdblistApiKey { get; set; } = "";
     }
 }

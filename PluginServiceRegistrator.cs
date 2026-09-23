@@ -16,6 +16,9 @@ namespace Jellyfin.Plugin.EnhancedFin
             // TmdbClient est sans état (son HttpClient est statique) : singleton.
             services.AddSingleton<TmdbClient>();
 
+            // Même raisonnement : HttpClient statique, le cache vit en base.
+            services.AddSingleton<MdblistClient>();
+
             // MediaCatalog peuple le référentiel à la demande, pour qu'une note sur un
             // média inconnu n'échoue pas sur la contrainte de clé étrangère.
             services.AddSingleton<MediaCatalog>();

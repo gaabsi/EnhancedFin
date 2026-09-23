@@ -22,11 +22,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     {
         private readonly Db _db;
         private readonly MediaCatalog _catalog;
+        private readonly MdblistClient _mdblist;
 
-        public MediaController(Db db, MediaCatalog catalog)
+        public MediaController(Db db, MediaCatalog catalog, MdblistClient mdblist)
         {
             _db = db;
             _catalog = catalog;
+            _mdblist = mdblist;
         }
 
         // GET /api/EnhancedFin/v1/media/{mediaKey}?detail=true&enrich=true
@@ -49,8 +51,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             if (user_id is null) return not_authenticated();
             if (!is_valid_media_key(mediaKey)) return invalid_media_key(mediaKey);
 
-            if (enrich && !await _catalog.ensure_exists(mediaKey))
-                return problem(404, "Média inconnu", $"'{mediaKey}' est introuvable sur TMDB.");
+            if (enrich)
+            {
+                // `force` pour une fiche antérieure au bloc « infos » : voir
+                // `MediaCatalog.needs_facts`.
+                var force = detail && _catalog.needs_facts(mediaKey);
+                if (!await _catalog.ensure_exists(mediaKey, force))
+                    return problem(404, "Média inconnu", $"'{mediaKey}' est introuvable sur TMDB.");
+            }
 
             using var con = _db.open();
 
@@ -125,7 +133,17 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             response["me"] = me;
 
             if (detail)
+            {
                 response["detail"] = read_detail(con, mediaKey);
+
+                // Notes RT du bloc « infos », en cache 7 jours. Un objet anonyme en
+                // camelCase, comme le reste de la route : un record sortirait en
+                // PascalCase (`RtCritics`).
+                var scores = await _mdblist.get_scores(mediaKey);
+                response["scores"] = scores is null
+                    ? null
+                    : new { rtCritics = scores.RtCritics, rtAudience = scores.RtAudience };
+            }
 
             return Ok(response);
         }
@@ -241,14 +259,15 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// - media_key (string) : clé du média
         ///
         /// Output :
-        /// - detail (object | null) : synopsis, casting, studios, scénaristes
+        /// - detail (object | null) : synopsis, casting, studios, scénaristes, date de
+        ///   sortie (`AAAA-MM-JJ`), réalisation
         /// </summary>
         private static object? read_detail(
             Microsoft.Data.Sqlite.SqliteConnection con, string media_key)
         {
             using var cmd = con.CreateCommand();
             cmd.CommandText = @"
-                SELECT overview, cast_json, screenwriters, studios
+                SELECT overview, cast_json, screenwriters, studios, release_date, directors
                 FROM media_detail WHERE media_key = $k";
             cmd.Parameters.AddWithValue("$k", media_key);
 
@@ -288,6 +307,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 cast,
                 screenwriters = rd.IsDBNull(2) ? null : rd.GetString(2),
                 studios = rd.IsDBNull(3) ? null : rd.GetString(3),
+                releaseDate = rd.IsDBNull(4) ? null : rd.GetString(4),
+                directors = rd.IsDBNull(5) ? null : rd.GetString(5),
             };
         }
 

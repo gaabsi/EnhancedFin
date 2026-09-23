@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
@@ -24,7 +25,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         [property: JsonPropertyName("order")] int Order);
 
     public record TmdbCredits(
-        [property: JsonPropertyName("cast")] List<TmdbCastMember>? Cast);
+        [property: JsonPropertyName("cast")] List<TmdbCastMember>? Cast,
+        // L'équipe technique : n'y sert que le poste `Director`, voir `TmdbItem.Directors`.
+        [property: JsonPropertyName("crew")] List<TmdbCredit>? Crew = null);
+
+    /// <summary>Un créateur de série, tel que TMDB le liste dans `created_by`.</summary>
+    public record TmdbCreator(
+        [property: JsonPropertyName("id")] int Id,
+        [property: JsonPropertyName("name")] string? Name);
 
     /// <summary>Un rôle tenu au fil d'une série.</summary>
     public record TmdbAggregateRole(
@@ -72,7 +80,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         // Renseigné par les seules listes mixtes — `/trending/all/week` rend films,
         // séries **et** personnes dans le même tableau. Nul partout ailleurs, le type
         // étant alors connu de l'appelant.
-        [property: JsonPropertyName("media_type")] string? MediaType = null)
+        [property: JsonPropertyName("media_type")] string? MediaType = null,
+        [property: JsonPropertyName("created_by")] List<TmdbCreator>? CreatedBy = null)
     {
         /// <summary>
         /// Logo à retenir, par ordre de préférence : français, anglais, puis sans
@@ -101,6 +110,22 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
 
         public int? Year =>
             Date is { Length: >= 4 } d && int.TryParse(d[..4], out var y) ? y : null;
+
+        /// <summary>
+        /// Qui signe l'œuvre : la réalisation d'un film, les créateurs d'une série.
+        ///
+        /// Une série n'a pas de réalisateur mais un par épisode ; `created_by` est ce
+        /// que TMDB met en avant à la place. Les deux ne peuvent pas coexister : un
+        /// film n'a pas de `created_by`, une série n'a pas de `credits` (voir
+        /// `get_item`, qui demande `aggregate_credits` pour elle).
+        /// </summary>
+        public List<string> Directors =>
+            (CreatedBy?.Select(c => c.Name)
+                ?? Credits?.Crew?.Where(c => c.Job == "Director").Select(c => c.Name)
+                ?? Enumerable.Empty<string?>())
+            .OfType<string>()
+            .Distinct()
+            .ToList();
     }
 
     /// <summary>
@@ -267,8 +292,29 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             _logger = logger;
         }
 
-        public static string? image_url(string? path) =>
-            string.IsNullOrEmpty(path) ? null : ImageBase + path;
+        /// <summary>
+        /// URL complète d'une image TMDB.
+        ///
+        /// ⚠️ Un logo peut être un **SVG**, que les clients affichent mal (Swiftfin :
+        /// logo vide dans l'en-tête, vécu sur « Demain tout commence »). TMDB sert la
+        /// même image rastérisée si l'on demande `.png` à la place (vérifié : 200,
+        /// `image/png`). Voir aussi `Db.fix_svg_logos` pour les fiches déjà en base.
+        ///
+        /// Parametres :
+        /// - path (string | null) : chemin TMDB, `/abc.jpg`
+        ///
+        /// Output :
+        /// - url (string | null) : URL complète, null sans chemin
+        /// </summary>
+        public static string? image_url(string? path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+
+            var raster = path.EndsWith(".svg", StringComparison.OrdinalIgnoreCase)
+                ? path[..^4] + ".png"
+                : path;
+            return ImageBase + raster;
+        }
 
         /// <summary>
         /// Recherche des médias par titre.
