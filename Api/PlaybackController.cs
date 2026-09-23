@@ -16,6 +16,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         string? Lang,
         bool? Watched);
 
+    /// <summary>Des épisodes d'une même saison. Un film : saison 0, épisode 0.</summary>
+    public record WatchedRequest(int Season, List<int>? Episodes);
+
     /// <summary>
     /// Progression de lecture, Continue Watching et masquage.
     ///
@@ -213,6 +216,116 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 mediaKey);
         }
 
+        // PUT /api/EnhancedFin/v1/me/watched/{mediaKey}  — corps { season, episodes }
+        //
+        // Marque des épisodes vus, en une transaction : une saison entière est un seul
+        // appel. `PUT /me/progress` ne convient pas ici — un épisode à la fois, et il ne
+        // sait pas démarquer.
+        [HttpPut("me/watched/{mediaKey}")]
+        public async Task<ActionResult> mark_watched(string mediaKey, [FromBody] WatchedRequest body)
+        {
+            var user_id = current_user_id();
+            if (user_id is null) return not_authenticated();
+            if (!is_valid_media_key(mediaKey)) return invalid_media_key(mediaKey);
+            if (invalid_watched(body) is { } invalid) return invalid;
+
+            // Après la validation : `ensure_media` peut partir vers TMDB.
+            if (await ensure_media(_catalog, mediaKey) is { } error) return error;
+
+            var now = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+
+            // Nouvelle ligne : durée 0, donc vue au sens de `SqlIsWatched`. Ligne
+            // existante (lecture entamée) : position poussée à la fin, pour la même
+            // raison. `watched_at` garde la première complétion.
+            return write_episodes(user_id, mediaKey, body, @"
+                INSERT INTO playback (user_id, media_key, season, episode,
+                                      position_ticks, duration_ticks, watched_at, updated_at)
+                VALUES ($u, $k, $se, $ep, 0, 0, $now, $now)
+                ON CONFLICT(user_id, media_key, season, episode) DO UPDATE SET
+                    position_ticks = playback.duration_ticks,
+                    watched_at     = COALESCE(playback.watched_at, excluded.watched_at),
+                    updated_at     = excluded.updated_at",
+                now);
+        }
+
+        // DELETE /api/EnhancedFin/v1/me/watched/{mediaKey}  — corps { season, episodes }
+        //
+        // Démarque : la ligne disparaît. Une ligne restante compterait encore comme vue
+        // dès que sa durée est inconnue (`SqlIsWatched`).
+        [HttpDelete("me/watched/{mediaKey}")]
+        public ActionResult unmark_watched(string mediaKey, [FromBody] WatchedRequest body)
+        {
+            var user_id = current_user_id();
+            if (user_id is null) return not_authenticated();
+            if (!is_valid_media_key(mediaKey)) return invalid_media_key(mediaKey);
+            if (invalid_watched(body) is { } invalid) return invalid;
+
+            return write_episodes(user_id, mediaKey, body, @"
+                DELETE FROM playback
+                WHERE user_id = $u AND media_key = $k AND season = $se AND episode = $ep",
+                now: null);
+        }
+
+        /// <summary>
+        /// Valide un corps `WatchedRequest`.
+        ///
+        /// Parametres :
+        /// - body (WatchedRequest) : corps reçu
+        ///
+        /// Output :
+        /// - error (ObjectResult | null) : 400, ou null si le corps est valide
+        /// </summary>
+        private ObjectResult? invalid_watched(WatchedRequest body)
+        {
+            if (body.Season < 0 || body.Episodes is not { Count: > 0 })
+                return problem(400, "Corps invalide", "season ≥ 0 et au moins un épisode attendus.");
+            // Borne large (une saison dépasse rarement 30 épisodes, un long anime 200) :
+            // elle empêche seulement une transaction démesurée.
+            if (body.Episodes.Count > 500 || body.Episodes.Exists(e => e < 0))
+                return problem(400, "Épisodes invalides", "entre 1 et 500 numéros positifs.");
+            return null;
+        }
+
+        /// <summary>
+        /// Applique une requête à chaque épisode du corps, en une transaction.
+        ///
+        /// Parametres :
+        /// - user_id (string) : utilisateur
+        /// - media_key (string) : clé du média
+        /// - body (WatchedRequest) : saison et épisodes
+        /// - sql (string) : requête, paramètres `$u $k $se $ep` et `$now` si fourni
+        /// - now (string | null) : horodatage, null si la requête n'en a pas besoin
+        ///
+        /// Output :
+        /// - result (ActionResult) : 204, ou 404 si le média manque au référentiel
+        /// </summary>
+        private ActionResult write_episodes(
+            string user_id, string media_key, WatchedRequest body, string sql, string? now)
+        {
+            using var con = _db.open();
+            using var transaction = con.BeginTransaction();
+            try
+            {
+                foreach (var episode in new HashSet<int>(body.Episodes!))
+                {
+                    using var cmd = con.CreateCommand();
+                    cmd.CommandText = sql;
+                    cmd.Parameters.AddWithValue("$u", user_id);
+                    cmd.Parameters.AddWithValue("$k", media_key);
+                    cmd.Parameters.AddWithValue("$se", body.Season);
+                    cmd.Parameters.AddWithValue("$ep", episode);
+                    if (now is not null) cmd.Parameters.AddWithValue("$now", now);
+                    cmd.ExecuteNonQuery();
+                }
+                transaction.Commit();
+            }
+            catch (Microsoft.Data.Sqlite.SqliteException ex) when (ex.SqliteErrorCode == 19)
+            {
+                return problem(404, "Média inconnu", "le média doit d'abord être enregistré dans `media`.");
+            }
+
+            return NoContent();
+        }
 
         // GET /api/EnhancedFin/v1/me/hidden
         // Les items masqués, pour pouvoir les restaurer depuis un écran dédié.

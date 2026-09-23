@@ -18,6 +18,7 @@ namespace Jellyfin.Plugin.EnhancedFin
 
             // Même raisonnement : HttpClient statique, le cache vit en base.
             services.AddSingleton<MdblistClient>();
+            services.AddSingleton<SeerrClient>();
 
             // MediaCatalog peuple le référentiel à la demande, pour qu'une note sur un
             // média inconnu n'échoue pas sur la contrainte de clé étrangère.
