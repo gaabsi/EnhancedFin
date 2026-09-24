@@ -145,9 +145,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 // MDBList et Seerr sont indépendants : lancés ensemble, la fiche
                 // n'attend que le plus lent des deux au lieu de leur somme.
                 var scores_task = _mdblist.get_scores(mediaKey);
-                var availability_task = MediaCatalog.split(mediaKey) is { Type: "tv" } tv
-                    ? _seerr.tv_availability(tv.TmdbId)
-                    : Task.FromResult<SeerrAvailability?>(null);
+                var availability_task = MediaCatalog.split(mediaKey) is { } key
+                    ? _seerr.details(key.Type, key.TmdbId)
+                    : Task.FromResult<SeerrDetails?>(null);
 
                 // Notes RT du bloc « infos », en cache 7 jours. Un objet anonyme en
                 // camelCase, comme le reste de la route : un record sortirait en
@@ -157,9 +157,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                     ? null
                     : new { rtCritics = scores.RtCritics, rtAudience = scores.RtAudience };
 
-                // Série : disponibilité selon Seerr (5 = complète). Absent si Seerr
-                // n'est pas configuré ou n'a pas répondu — le client n'affiche alors
-                // pas de carte « saisons manquantes », plutôt qu'une carte à tort.
+                // Film ou série : disponibilité selon Seerr (5 = complet). Absent si
+                // Seerr n'est pas configuré ou n'a pas répondu — le client n'affiche
+                // alors ni carte « saisons manquantes » ni « Demander sur Seerr »,
+                // plutôt qu'à tort. Le détail par saison est sur `GET seerr/{key}`.
                 if (await availability_task is { } availability)
                 {
                     response["seerr"] = new { status = availability.Status };
