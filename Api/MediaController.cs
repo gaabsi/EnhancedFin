@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -8,6 +9,9 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Jellyfin.Plugin.EnhancedFin.Api
 {
+    /// <summary>Réponse de `GET media/{mediaKey}/playable`.</summary>
+    public record PlayableResponse(bool playable);
+
     /// <summary>
     /// Fiche média : métadonnées + données de l'utilisateur courant, en un seul appel.
     ///
@@ -26,15 +30,22 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         private readonly MdblistClient _mdblist;
         private readonly TmdbClient _tmdb;
         private readonly SeerrClient _seerr;
+        private readonly JellyfinLibrary _library;
 
         public MediaController(
-            Db db, MediaCatalog catalog, MdblistClient mdblist, TmdbClient tmdb, SeerrClient seerr)
+            Db db,
+            MediaCatalog catalog,
+            MdblistClient mdblist,
+            TmdbClient tmdb,
+            SeerrClient seerr,
+            JellyfinLibrary library)
         {
             _db = db;
             _catalog = catalog;
             _mdblist = mdblist;
             _tmdb = tmdb;
             _seerr = seerr;
+            _library = library;
         }
 
         // GET /api/EnhancedFin/v1/media/{mediaKey}?detail=true&enrich=true
@@ -230,6 +241,49 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
             return Ok(new { mediaKey, number = season, name = data.Name, episodes });
         }
+
+        // GET /api/EnhancedFin/v1/media/{mediaKey}/playable?season=&episode=
+        //
+        // Le bouton « Lire » d'une fiche, native ou de découverte, suit cette réponse.
+        // Sans saison ni épisode, la question porte sur l'œuvre entière ; avec, sur
+        // cet épisode précis — un épisode manquant a une fiche mais pas de fichier.
+        [HttpGet("media/{mediaKey}/playable")]
+        public async Task<ActionResult> playable(
+            string mediaKey,
+            [FromQuery] int? season = null,
+            [FromQuery] int? episode = null)
+        {
+            var user = current_user();
+            if (user is null) return not_authenticated();
+            if (MediaCatalog.split(mediaKey) is not { } parts) return invalid_media_key(mediaKey);
+            if ((season is null) != (episode is null))
+                return problem(400, "Épisode incomplet", "season et episode vont ensemble.");
+            if (season is not null && parts.Type != "tv")
+                return problem(400, "Épisode sans série", "season et episode ne s'appliquent qu'à une série.");
+            if (season < 0 || episode < 1)
+                return problem(400, "Épisode invalide", "season >= 0 et episode >= 1.");
+
+            return Ok(new PlayableResponse(await is_playable(user.Value, mediaKey, season, episode)));
+        }
+
+        /// <summary>
+        /// Dit si un média est lisible par cet utilisateur.
+        ///
+        /// Seul point de variation de la route `playable` : tout le reste (validation,
+        /// réponse) est commun. `Task` dès maintenant, pour qu'une source asynchrone
+        /// puisse s'y ajouter sans changer la signature.
+        ///
+        /// Parametres :
+        /// - user (Guid) : utilisateur dont on applique les droits
+        /// - media_key (string) : clé du film ou de la série
+        /// - season (int?) : saison de l'épisode visé, null pour l'œuvre entière
+        /// - episode (int?) : numéro de l'épisode visé, null pour l'œuvre entière
+        ///
+        /// Output :
+        /// - playable (bool) : vrai si un fichier lisible existe sur le serveur
+        /// </summary>
+        private Task<bool> is_playable(Guid user, string media_key, int? season, int? episode)
+            => Task.FromResult(_library.is_in_library(user, media_key, season, episode));
 
         /// <summary>
         /// Nombre d'épisodes vus, par saison.

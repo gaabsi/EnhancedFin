@@ -15,10 +15,9 @@ Jellyfin.Plugin.EnhancedFin.xml
 
 # Notes de travail : elles restent en local. Elles décrivent la construction
 # du projet, pas le projet, et portent des adresses de serveur, des accès de
-# test et des identifiants d'utilisateur.
-CLAUDE.md
-AVANCEMENT.md
-DESIGN.md
+# test et des identifiants d'utilisateur. Seul le README est publié.
+*.md
+!README.md
 
 # macOS
 .DS_Store

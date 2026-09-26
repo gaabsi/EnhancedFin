@@ -178,6 +178,54 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             }
         }
 
+        /// <summary>
+        /// Dit si un média est **lisible sur ce serveur** par cet utilisateur.
+        ///
+        /// Les droits (bibliothèques, contrôle parental) sont déjà appliqués par
+        /// `index`, qui passe par `InternalItemsQuery(user)`. Reste le cas qu'un index
+        /// ne voit pas : les items **virtuels** — un épisode manquant a une page mais
+        /// aucun fichier. Le droit de lecture du compte n'est pas revérifié : Jellyfin
+        /// le fait déjà au moment de servir le flux.
+        ///
+        /// Parametres :
+        /// - user_id (Guid) : utilisateur dont on applique les droits
+        /// - media_key (string) : clé du film ou de la série
+        /// - season (int?) : saison de l'épisode visé, null pour l'œuvre entière
+        /// - episode (int?) : numéro de l'épisode visé, null pour l'œuvre entière
+        ///
+        /// Output :
+        /// - playable (bool) : faux si la bibliothèque répond mal — on grise un bouton,
+        ///   on ne lance jamais une lecture vouée à l'échec
+        /// </summary>
+        public bool is_in_library(Guid user_id, string media_key, int? season, int? episode)
+        {
+            var user = _users.GetUserById(user_id);
+            if (user is null) return false;
+            if (!index(user_id).TryGetValue(media_key, out var match)) return false;
+
+            try
+            {
+                var item = _library.GetItemById(match.JellyfinId);
+                if (item is null || item.IsVirtualItem) return false;
+                if (season is null || episode is null) return true;
+
+                return _library.GetItemList(new InternalItemsQuery(user)
+                {
+                    AncestorIds = new[] { item.Id },
+                    IncludeItemTypes = new[] { BaseItemKind.Episode },
+                    ParentIndexNumber = season,
+                    IndexNumber = episode,
+                    Recursive = true,
+                }).Any(e => !e.IsVirtualItem);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[EnhancedFin] Lisibilité en échec pour {Key}", media_key);
+
+                return false;
+            }
+        }
+
         /// <summary>Index en cache s'il est encore valide, null sinon.</summary>
         private static Dictionary<string, LibraryMatch>? fresh(Guid user_id) =>
             _index.TryGetValue(user_id, out var cached)
