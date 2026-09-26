@@ -9,8 +9,12 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Jellyfin.Plugin.EnhancedFin.Api
 {
-    /// <summary>Réponse de `GET media/{mediaKey}/playable`.</summary>
-    public record PlayableResponse(bool playable);
+    /// <summary>
+    /// Réponse de `GET media/{mediaKey}/playable`. `itemId` est l'item Jellyfin que le
+    /// client passe à son lecteur, au format des identifiants de l'API (sans tirets) ;
+    /// absent du JSON quand rien n'est lisible.
+    /// </summary>
+    public record PlayableResponse(bool playable, string? itemId);
 
     /// <summary>
     /// Fiche média : métadonnées + données de l'utilisateur courant, en un seul appel.
@@ -263,11 +267,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             if (season < 0 || episode < 1)
                 return problem(400, "Épisode invalide", "season >= 0 et episode >= 1.");
 
-            return Ok(new PlayableResponse(await is_playable(user.Value, mediaKey, season, episode)));
+            var item_id = await is_playable(user.Value, mediaKey, season, episode);
+
+            return Ok(new PlayableResponse(item_id is not null, item_id?.ToString("N")));
         }
 
         /// <summary>
-        /// Dit si un média est lisible par cet utilisateur.
+        /// Item à lire pour un média, s'il est lisible par cet utilisateur.
         ///
         /// Seul point de variation de la route `playable` : tout le reste (validation,
         /// réponse) est commun. `Task` dès maintenant, pour qu'une source asynchrone
@@ -280,10 +286,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// - episode (int?) : numéro de l'épisode visé, null pour l'œuvre entière
         ///
         /// Output :
-        /// - playable (bool) : vrai si un fichier lisible existe sur le serveur
+        /// - item_id (Guid?) : item Jellyfin à lancer, null si rien n'est lisible
         /// </summary>
-        private Task<bool> is_playable(Guid user, string media_key, int? season, int? episode)
-            => Task.FromResult(_library.is_in_library(user, media_key, season, episode));
+        private Task<Guid?> is_playable(Guid user, string media_key, int? season, int? episode)
+            => Task.FromResult(_library.find_playable(user, media_key, season, episode));
 
         /// <summary>
         /// Nombre d'épisodes vus, par saison.
