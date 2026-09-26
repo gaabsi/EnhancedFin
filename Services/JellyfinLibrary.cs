@@ -179,7 +179,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         }
 
         /// <summary>
-        /// Dit si un média est **lisible sur ce serveur** par cet utilisateur.
+        /// Item Jellyfin **à lire** pour un média, s'il est lisible sur ce serveur par
+        /// cet utilisateur.
         ///
         /// Les droits (bibliothèques, contrôle parental) sont déjà appliqués par
         /// `index`, qui passe par `InternalItemsQuery(user)`. Reste le cas qu'un index
@@ -194,21 +195,23 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// - episode (int?) : numéro de l'épisode visé, null pour l'œuvre entière
         ///
         /// Output :
-        /// - playable (bool) : faux si la bibliothèque répond mal — on grise un bouton,
+        /// - item_id (Guid?) : l'épisode demandé, sinon le film ou la série ; null si
+        ///   rien n'est lisible ou si la bibliothèque répond mal — on grise un bouton,
         ///   on ne lance jamais une lecture vouée à l'échec
         /// </summary>
-        public bool is_in_library(Guid user_id, string media_key, int? season, int? episode)
+        public Guid? find_playable(Guid user_id, string media_key, int? season, int? episode)
         {
             var user = _users.GetUserById(user_id);
-            if (user is null) return false;
-            if (!index(user_id).TryGetValue(media_key, out var match)) return false;
+            if (user is null) return null;
+            if (!index(user_id).TryGetValue(media_key, out var match)) return null;
 
             try
             {
                 var item = _library.GetItemById(match.JellyfinId);
-                if (item is null || item.IsVirtualItem) return false;
-                if (season is null || episode is null) return true;
+                if (item is null || item.IsVirtualItem) return null;
+                if (season is null || episode is null) return item.Id;
 
+                // L'épisode lui-même, et non la série : c'est lui que le lecteur lance.
                 return _library.GetItemList(new InternalItemsQuery(user)
                 {
                     AncestorIds = new[] { item.Id },
@@ -216,13 +219,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
                     ParentIndexNumber = season,
                     IndexNumber = episode,
                     Recursive = true,
-                }).Any(e => !e.IsVirtualItem);
+                }).FirstOrDefault(e => !e.IsVirtualItem)?.Id;
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "[EnhancedFin] Lisibilité en échec pour {Key}", media_key);
 
-                return false;
+                return null;
             }
         }
 
