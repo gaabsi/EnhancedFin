@@ -17,6 +17,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     public record PlayableResponse(bool playable, string? itemId);
 
     /// <summary>
+    /// Un épisode lisible dans la réponse de `GET media/{mediaKey}/seasons/{season}/playable`.
+    /// Les épisodes absents de la liste ne sont pas lisibles.
+    /// </summary>
+    public record PlayableEpisode(int episode, string itemId);
+
+    /// <summary>
     /// Fiche média : métadonnées + données de l'utilisateur courant, en un seul appel.
     ///
     /// Remplace la cascade du front actuel, qui enchaîne 6 à 8 requêtes pour afficher
@@ -267,29 +273,75 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             if (season < 0 || episode < 1)
                 return problem(400, "Épisode invalide", "season >= 0 et episode >= 1.");
 
-            var item_id = await is_playable(user.Value, mediaKey, season, episode);
+            // Un épisode précis = la saison, puis cet épisode : une seule façon de
+            // répondre pour un épisode, quelle que soit la route.
+            Guid? item_id = season is int s && episode is int e
+                ? (await playable_episodes(user.Value, mediaKey, s)).TryGetValue(e, out var id) ? id : null
+                : await is_playable(user.Value, mediaKey);
 
             return Ok(new PlayableResponse(item_id is not null, item_id?.ToString("N")));
         }
 
+        // GET /api/EnhancedFin/v1/media/{mediaKey}/seasons/{season}/playable
+        //
+        // Les épisodes lisibles d'une saison, en une requête. La feuille des épisodes la
+        // pose à son ouverture, une fois par saison consultée : chaque épisode se lit ou
+        // se grise d'après la réponse. Même question pour toute série, dans la
+        // médiathèque ou non — le serveur seul décide.
+        [HttpGet("media/{mediaKey}/seasons/{season:int}/playable")]
+        public async Task<ActionResult> playable_season(string mediaKey, int season)
+        {
+            var user = current_user();
+            if (user is null) return not_authenticated();
+            if (MediaCatalog.split(mediaKey) is not { } parts) return invalid_media_key(mediaKey);
+            if (parts.Type != "tv")
+                return problem(400, "Saison sans série", "seule une série a des saisons.");
+            if (season < 0)
+                return problem(400, "Saison invalide", "season >= 0.");
+
+            var episodes = (await playable_episodes(user.Value, mediaKey, season))
+                .OrderBy(entry => entry.Key)
+                .Select(entry => new PlayableEpisode(entry.Key, entry.Value.ToString("N")))
+                .ToList();
+
+            return Ok(new { mediaKey, season, episodes });
+        }
+
         /// <summary>
-        /// Item à lire pour un média, s'il est lisible par cet utilisateur.
+        /// Item à lire pour un film ou une série entière, s'il est lisible par cet
+        /// utilisateur.
         ///
-        /// Seul point de variation de la route `playable` : tout le reste (validation,
-        /// réponse) est commun. `Task` dès maintenant, pour qu'une source asynchrone
-        /// puisse s'y ajouter sans changer la signature.
+        /// Premier des deux seuls points de variation de `playable` (avec
+        /// `playable_episodes`) : tout le reste (validation, réponse) est commun. `Task`
+        /// dès maintenant, pour qu'une source asynchrone puisse s'y ajouter sans changer
+        /// la signature.
         ///
         /// Parametres :
         /// - user (Guid) : utilisateur dont on applique les droits
         /// - media_key (string) : clé du film ou de la série
-        /// - season (int?) : saison de l'épisode visé, null pour l'œuvre entière
-        /// - episode (int?) : numéro de l'épisode visé, null pour l'œuvre entière
         ///
         /// Output :
         /// - item_id (Guid?) : item Jellyfin à lancer, null si rien n'est lisible
         /// </summary>
-        private Task<Guid?> is_playable(Guid user, string media_key, int? season, int? episode)
-            => Task.FromResult(_library.find_playable(user, media_key, season, episode));
+        private Task<Guid?> is_playable(Guid user, string media_key)
+            => Task.FromResult(_library.find_playable(user, media_key));
+
+        /// <summary>
+        /// Épisodes lisibles d'une saison, pour cet utilisateur : numéro → item à lancer.
+        ///
+        /// Second point de variation de `playable`, commun aux deux routes : un épisode
+        /// précis est toujours répondu par sa saison.
+        ///
+        /// Parametres :
+        /// - user (Guid) : utilisateur dont on applique les droits
+        /// - media_key (string) : clé de la série
+        /// - season (int) : numéro de saison
+        ///
+        /// Output :
+        /// - episodes (IReadOnlyDictionary&lt;int, Guid&gt;) : vide si rien n'est lisible
+        /// </summary>
+        private Task<IReadOnlyDictionary<int, Guid>> playable_episodes(Guid user, string media_key, int season)
+            => Task.FromResult<IReadOnlyDictionary<int, Guid>>(_library.find_playable_episodes(user, media_key, season));
 
         /// <summary>
         /// Nombre d'épisodes vus, par saison.
