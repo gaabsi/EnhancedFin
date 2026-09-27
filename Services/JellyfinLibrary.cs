@@ -179,47 +179,32 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         }
 
         /// <summary>
-        /// Item Jellyfin **à lire** pour un média, s'il est lisible sur ce serveur par
-        /// cet utilisateur.
+        /// Item Jellyfin **à lire** pour un média — film ou série entière —, s'il est
+        /// lisible sur ce serveur par cet utilisateur.
         ///
         /// Les droits (bibliothèques, contrôle parental) sont déjà appliqués par
         /// `index`, qui passe par `InternalItemsQuery(user)`. Reste le cas qu'un index
-        /// ne voit pas : les items **virtuels** — un épisode manquant a une page mais
-        /// aucun fichier. Le droit de lecture du compte n'est pas revérifié : Jellyfin
-        /// le fait déjà au moment de servir le flux.
+        /// ne voit pas : les items **virtuels**, qui ont une page mais aucun fichier. Le
+        /// droit de lecture du compte n'est pas revérifié : Jellyfin le fait déjà au
+        /// moment de servir le flux.
         ///
         /// Parametres :
         /// - user_id (Guid) : utilisateur dont on applique les droits
         /// - media_key (string) : clé du film ou de la série
-        /// - season (int?) : saison de l'épisode visé, null pour l'œuvre entière
-        /// - episode (int?) : numéro de l'épisode visé, null pour l'œuvre entière
         ///
         /// Output :
-        /// - item_id (Guid?) : l'épisode demandé, sinon le film ou la série ; null si
-        ///   rien n'est lisible ou si la bibliothèque répond mal — on grise un bouton,
-        ///   on ne lance jamais une lecture vouée à l'échec
+        /// - item_id (Guid?) : le film ou la série ; null si rien n'est lisible ou si la
+        ///   bibliothèque répond mal — on grise un bouton, on ne lance jamais une lecture
+        ///   vouée à l'échec
         /// </summary>
-        public Guid? find_playable(Guid user_id, string media_key, int? season, int? episode)
+        public Guid? find_playable(Guid user_id, string media_key)
         {
-            var user = _users.GetUserById(user_id);
-            if (user is null) return null;
             if (!index(user_id).TryGetValue(media_key, out var match)) return null;
 
             try
             {
                 var item = _library.GetItemById(match.JellyfinId);
-                if (item is null || item.IsVirtualItem) return null;
-                if (season is null || episode is null) return item.Id;
-
-                // L'épisode lui-même, et non la série : c'est lui que le lecteur lance.
-                return _library.GetItemList(new InternalItemsQuery(user)
-                {
-                    AncestorIds = new[] { item.Id },
-                    IncludeItemTypes = new[] { BaseItemKind.Episode },
-                    ParentIndexNumber = season,
-                    IndexNumber = episode,
-                    Recursive = true,
-                }).FirstOrDefault(e => !e.IsVirtualItem)?.Id;
+                return item is null || item.IsVirtualItem ? null : item.Id;
             }
             catch (Exception ex)
             {
@@ -227,6 +212,54 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
 
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Épisodes lisibles d'une saison, en une seule requête : numéro d'épisode → item
+        /// à lancer. Un fichier multi-épisodes (E01-E02) répond pour chacun de ses
+        /// numéros. Mêmes règles que `find_playable` : droits de l'index, virtuels exclus.
+        ///
+        /// Parametres :
+        /// - user_id (Guid) : utilisateur dont on applique les droits
+        /// - media_key (string) : clé de la série
+        /// - season (int) : numéro de saison (0 = épisodes spéciaux)
+        ///
+        /// Output :
+        /// - episodes (Dictionary&lt;int, Guid&gt;) : vide si la série n'est pas sur ce
+        ///   serveur ou si la bibliothèque répond mal
+        /// </summary>
+        public Dictionary<int, Guid> find_playable_episodes(Guid user_id, string media_key, int season)
+        {
+            var playable = new Dictionary<int, Guid>();
+
+            var user = _users.GetUserById(user_id);
+            if (user is null || !index(user_id).TryGetValue(media_key, out var match)) return playable;
+
+            try
+            {
+                var episodes = _library.GetItemList(new InternalItemsQuery(user)
+                {
+                    AncestorIds = new[] { match.JellyfinId },
+                    IncludeItemTypes = new[] { BaseItemKind.Episode },
+                    ParentIndexNumber = season,
+                    Recursive = true,
+                });
+
+                foreach (var episode in episodes)
+                {
+                    if (episode.IsVirtualItem || episode.IndexNumber is not int first) continue;
+
+                    var last = (episode as Episode)?.IndexNumberEnd ?? first;
+                    for (var number = first; number <= last; number++)
+                        playable.TryAdd(number, episode.Id);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[EnhancedFin] Lisibilité en échec pour {Key} saison {Season}", media_key, season);
+            }
+
+            return playable;
         }
 
         /// <summary>Index en cache s'il est encore valide, null sinon.</summary>
