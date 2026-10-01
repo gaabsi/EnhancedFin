@@ -26,6 +26,10 @@ namespace Jellyfin.Plugin.EnhancedFin
 
             // Scoped : ILibraryManager est résolu par requête.
             services.AddScoped<JellyfinLibrary>();
+
+            // Service de fond : écoute les arrêts de lecture pour figer les groupes
+            // SyncPlay abandonnés.
+            services.AddHostedService<SyncPlayGroupGuard>();
         }
     }
 }
