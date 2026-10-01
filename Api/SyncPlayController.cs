@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -22,6 +23,16 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     /// </summary>
     public class SyncPlayController : EnhancedFinController
     {
+        /// <summary>
+        /// Délai minimal entre deux invitations d'un même expéditeur à une même personne :
+        /// l'invitation s'affiche aussi en message sur la webapp et les TV (faille n°8 de
+        /// l'ancien plugin : spam).
+        /// </summary>
+        private static readonly TimeSpan InviteCooldown = TimeSpan.FromSeconds(10);
+
+        /// <summary>Dernier envoi par (expéditeur, cible). Statique : un controller vit une requête.</summary>
+        private static readonly ConcurrentDictionary<(Guid, Guid), DateTime> LastInvites = new();
+
         private readonly ISessionManager _sessions;
         private readonly ISyncPlayManager _syncplay;
         private readonly IUserManager _users;
@@ -40,6 +51,15 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             var me = current_user();
             if (me is null) return not_authenticated();
 
+            // Un champ absent devient Guid.Empty, qui désigne aussi les sessions sans utilisateur
+            // (clés API) pour `SendMessageToUserSessions`.
+            if (body.groupId == Guid.Empty || body.userId == Guid.Empty)
+                return problem(400, "Requête invalide", "groupId et userId sont obligatoires.");
+            if (body.userId == me.Value)
+                return problem(400, "Requête invalide", "On ne s'invite pas soi-même.");
+            if (_users.GetUserById(body.userId) is null)
+                return problem(404, "Utilisateur introuvable", "Aucun utilisateur ne porte cet identifiant.");
+
             // L'expéditeur doit être dans le groupe : on ne peut pas inviter chez les autres,
             // ni au nom d'un autre (faille n°8 de l'ancien plugin, qui lisait l'expéditeur
             // dans le corps).
@@ -48,6 +68,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             var sender = _users.GetUserById(me.Value);
             if (group is null || sender is null || !group.Participants.Contains(sender.Username))
                 return problem(403, "Hors du groupe", "On ne peut inviter que dans un groupe dont on fait partie.");
+
+            var key = (me.Value, body.userId);
+            var now = DateTime.UtcNow;
+            if (LastInvites.TryGetValue(key, out var last) && now - last < InviteCooldown)
+                return problem(429, "Trop d'invitations", "Attendre quelques secondes avant de réinviter.");
+            LastInvites[key] = now;
 
             var command = new GeneralCommand
             {
@@ -64,8 +90,11 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 new List<Guid> { body.userId }, SessionMessageType.GeneralCommand, command, ct)
                 .ConfigureAwait(false);
 
-            // Combien d'appareils de la cible l'ont reçue : 0 = pas connecté, le client le dit.
-            return Ok(new { delivered = _sessions.Sessions.Count(s => s.UserId == body.userId) });
+            // Un booléen, pas un nombre d'appareils : on ne révèle que ce qui est utile à
+            // l'expéditeur. Seules comptent les sessions dont le socket est réellement ouvert.
+            var delivered = _sessions.Sessions.Any(s =>
+                s.ContainsUser(body.userId) && s.SessionControllers.Any(c => c.IsSessionActive));
+            return Ok(new { delivered });
         }
     }
 }
