@@ -1,9 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- net9.0 imposé par Jellyfin.Controller 10.11 (10.9 était en net8.0,
-         Jellyfin 12 passera à net10.0). -->
-    <TargetFramework>net9.0</TargetFramework>
+    <!-- net10.0 imposé par Jellyfin.Controller 12 (10.11 était en net9.0). -->
+    <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>Jellyfin.Plugin.EnhancedFin</AssemblyName>
     <RootNamespace>Jellyfin.Plugin.EnhancedFin</RootNamespace>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
@@ -16,12 +15,15 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 10.11.0 et pas 10.11.6 : compatible avec toutes les 10.11.x.
-         Jellyfin 12 passe à .NET 10 et casse la compat binaire des plugins
-         (cf. DESIGN.md) — la migration se fera par recompilation. -->
-    <PackageReference Include="Jellyfin.Controller" Version="10.11.0" />
-    <PackageReference Include="Jellyfin.Model" Version="10.11.0" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- 12.0.0 et pas 12.1.0 : compatible avec toutes les 12.x. Jellyfin 12 est
+         passé à .NET 10 et a cassé la compat binaire des plugins (cf. DESIGN.md) :
+         la version 10.11 du plugin vit sur la branche `jf-10.11`. -->
+    <PackageReference Include="Jellyfin.Controller" Version="12.0.0" />
+    <PackageReference Include="Jellyfin.Model" Version="12.0.0" />
+    <!-- Exactement la version embarquée par Jellyfin (12.1 : 10.0.11). C'est la sienne
+         qui est chargée : une version plus haute ici et le plugin ne démarre pas
+         (FileNotFoundException sur Microsoft.Data.Sqlite). Vérifier à chaque Jellyfin. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
   </ItemGroup>
 
 </Project>
