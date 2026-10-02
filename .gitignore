@@ -21,3 +21,6 @@ Jellyfin.Plugin.EnhancedFin.xml
 
 # macOS
 .DS_Store
+
+# Script de migration depuis l'ancien plugin : usage personnel, ponctuel.
+migrate.py
