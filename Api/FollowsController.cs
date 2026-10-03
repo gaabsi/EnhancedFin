@@ -18,8 +18,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     /// en JavaScript — logique qu'il faudrait réécrire en Swift, puis une troisième fois
     /// pour tvOS. Renvoyer des jours prêts à afficher supprime cette duplication.
     ///
-    /// Les dates de sortie viennent de TMDB. La disponibilité sur les sources externes
-    /// est un tout autre sujet, qui relève de un autre plugin.
+    /// Les dates de sortie viennent de TMDB.
     /// </summary>
     /// <summary>
     /// Une sortie au calendrier : un épisode, ou un film le jour de sa sortie.

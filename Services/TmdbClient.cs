@@ -235,7 +235,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// La plus grosse réponse légitime est une filmographie complète, de l'ordre
         /// de quelques centaines de kilo-octets. Sans plafond, `GetAsync` bufférise
         /// tout ce qui arrive : une réponse anormale suffirait à faire enfler la
-        /// mémoire du Pi, où la limite du compose est de toute façon ignorée.
+        /// mémoire d'un petit serveur.
         /// Au-delà, la lecture lève — et `fetch` renvoie `null`, comme pour toute
         /// autre panne réseau.
         /// </summary>
@@ -253,8 +253,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         //
         // `MemoryCache` et non `ConcurrentDictionary` : la clé dérive du texte saisi,
         // donc d'une entrée utilisateur. Un dictionnaire qui ne purge jamais grossit
-        // d'une entrée par recherche distincte et n'a aucune borne — sur un Pi, c'est
-        // la mémoire du serveur qui finit par payer. `SizeLimit` fait évincer les
+        // d'une entrée par recherche distincte et n'a aucune borne — c'est la mémoire
+        // du serveur qui finit par payer. `SizeLimit` fait évincer les
         // entrées les plus anciennes au-delà du plafond.
         private const int CacheEntries = 500;
 
@@ -320,8 +320,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// <summary>
         /// URL complète d'une image TMDB.
         ///
-        /// ⚠️ Un logo peut être un **SVG**, que les clients affichent mal (Swiftfin :
-        /// logo vide dans l'en-tête, vécu sur « Demain tout commence »). TMDB sert la
+        /// ⚠️ Un logo peut être un **SVG**, que les clients affichent mal (logo vide
+        /// dans l'en-tête sur iOS). TMDB sert la
         /// même image rastérisée si l'on demande `.png` à la place (vérifié : 200,
         /// `image/png`). Voir aussi `Db.fix_svg_logos` pour les fiches déjà en base.
         ///

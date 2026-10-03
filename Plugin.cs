@@ -1,9 +1,7 @@
 using System;
-using System.Collections.Generic;
 using Jellyfin.Plugin.EnhancedFin.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
-using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
 
 namespace Jellyfin.Plugin.EnhancedFin
@@ -12,17 +10,17 @@ namespace Jellyfin.Plugin.EnhancedFin
     /// Point d'entrée du plugin. Ne fait QUE de l'enregistrement : toute la logique
     /// vit dans Api/ et Data/.
     /// </summary>
-    public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
+    public class Plugin : BasePlugin<PluginConfiguration>
     {
         public override string Name => "EnhancedFin";
 
-        // GUID neuf : doit impérativement différer de celui de Media Rating
-        // (a1b2c3d4-e5f6-7890-abcd-ef1234567890), sinon Jellyfin refuse de
-        // charger les deux plugins simultanément.
+        // Identifiant unique du plugin : deux plugins au même GUID ne peuvent pas être
+        // chargés ensemble. Ne jamais le changer, sinon Jellyfin y verrait un autre
+        // plugin et sa configuration serait perdue.
         public override Guid Id => Guid.Parse("2dd4485f-d630-456e-9ed4-6bb35c46ebf9");
 
         public override string Description =>
-            "Données utilisateur enrichies : notes, watchlist, reprise de lecture, suivis et calendrier.";
+            "Ratings, watchlist, resume, follows and release calendar for Jellyfin users.";
 
         public static Plugin? Instance { get; private set; }
 
@@ -31,7 +29,5 @@ namespace Jellyfin.Plugin.EnhancedFin
         {
             Instance = this;
         }
-
-        public IEnumerable<PluginPageInfo> GetPages() => Array.Empty<PluginPageInfo>();
     }
 }

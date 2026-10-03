@@ -28,10 +28,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     /// Remplace la cascade du front actuel, qui enchaîne 6 à 8 requêtes pour afficher
     /// une fiche (ProviderIds, MyRating, Watchlist, Monitoring, SeerrDetails, TmdbImages,
     /// Anime/Match…) puis assemble le tout en JavaScript.
-    ///
-    /// Cet endpoint n'était pas réalisable sur l'ancien schéma : les quatre systèmes
-    /// d'identifiants concurrents empêchaient toute jointure entre note, watchlist et
-    /// progression (cf. DESIGN.md).
     /// </summary>
     public class MediaController : EnhancedFinController
     {
@@ -64,7 +60,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         // récupérant depuis TMDB. C'est une **demande explicite** de l'appelant, pas
         // un effet de bord : la règle « un GET ne crée pas de données » tient, ce
         // qu'un peuplement automatique aurait rompu en accumulant des milliers de
-        // fiches jamais touchées (cf. DESIGN.md).
+        // fiches jamais touchées.
         //
         // Sert aux fiches de découverte, qui ont besoin du logo et du synopsis pour
         // s'afficher correctement alors que l'utilisateur n'a encore rien fait du média.
@@ -120,14 +116,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             //
             // Un record donnerait un contrat typé, mais changerait le JSON : System.Text
             // .Json applique `DefaultIgnoreCondition = WhenWritingNull` aux **propriétés**,
-            // pas aux entrées de dictionnaire. Mesuré sur le serveur de test : cette route
-            // émet aujourd'hui `"hiddenAt": null` et `"progress": null`, là où tout le
-            // reste de l'API omet ses nuls. Passer aux records les ferait disparaître.
-            //
-            // Les rétablir demanderait un [JsonIgnore(Condition = Never)] sur chaque
-            // propriété nullable — soit un type qui décrit une anomalie au lieu du
-            // modèle. À arbitrer : soit on accepte la rupture (aucun client connu ne lit
-            // ces deux champs), soit on garde le dictionnaire.
+            // pas aux entrées de dictionnaire : cette route émet `"hiddenAt": null` et
+            // `"progress": null`, là où tout le reste de l'API omet ses nuls. Passer aux
+            // records les ferait disparaître, ce qui changerait le contrat de la route.
+            // Le dictionnaire est gardé pour ne pas le rompre.
             var response = new Dictionary<string, object?>
             {
                 ["mediaKey"] = rd.GetString(0),
@@ -522,15 +514,15 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// - media_key (string) : clé du média
         ///
         /// Output :
-        /// - detail (object | null) : synopsis, casting, studios, scénaristes, date de
-        ///   sortie (`AAAA-MM-JJ`), réalisation
+        /// - detail (object | null) : synopsis, casting, date de sortie (`AAAA-MM-JJ`),
+        ///   réalisation
         /// </summary>
         private static object? read_detail(
             Microsoft.Data.Sqlite.SqliteConnection con, string media_key)
         {
             using var cmd = con.CreateCommand();
             cmd.CommandText = @"
-                SELECT overview, cast_json, screenwriters, studios, release_date, directors
+                SELECT overview, cast_json, release_date, directors
                 FROM media_detail WHERE media_key = $k";
             cmd.Parameters.AddWithValue("$k", media_key);
 
@@ -540,10 +532,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             // cast_json est ré-exposé en JSON plutôt qu'en chaîne échappée, pour que
             // le client n'ait pas à le désérialiser une seconde fois.
             //
-            // ⚠️ Toutes les lignes ne viennent pas de `serialize_cast`. Celles de la
-            // migration recopient verbatim ce que **le client** postait à l'ancien
-            // plugin : un `List<Dictionary<string,string>>`, donc des `id` en chaîne
-            // — quand il y en a un. Un casting de cette forme faisait échouer le
+            // ⚠️ Toutes les lignes ne viennent pas de `serialize_cast` : une base
+            // importée peut porter un `List<Dictionary<string,string>>`, donc des `id`
+            // en chaîne — quand il y en a un. Un casting de cette forme faisait échouer le
             // décodage de toute la réponse côté Swift, pas seulement du casting :
             // la fiche perdait logo, image de fond, genres, note ET synopsis, en
             // silence. On préfère un casting absent à une fiche vide.
@@ -568,10 +559,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             {
                 overview = rd.IsDBNull(0) ? null : rd.GetString(0),
                 cast,
-                screenwriters = rd.IsDBNull(2) ? null : rd.GetString(2),
-                studios = rd.IsDBNull(3) ? null : rd.GetString(3),
-                releaseDate = rd.IsDBNull(4) ? null : rd.GetString(4),
-                directors = rd.IsDBNull(5) ? null : rd.GetString(5),
+                releaseDate = rd.IsDBNull(2) ? null : rd.GetString(2),
+                directors = rd.IsDBNull(3) ? null : rd.GetString(3),
             };
         }
 

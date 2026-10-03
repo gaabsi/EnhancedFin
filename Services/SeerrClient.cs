@@ -46,7 +46,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
     /// <summary>
     /// Client Seerr (Jellyseerr / Overseerr) : lecture des statuts et demandes.
     ///
-    /// Repris du plugin plugin précédent (`SeerrClient`, `SeerrController`). Statuts Seerr :
+    /// Statuts Seerr :
     /// 1 inconnu, 2 en attente, 3 en cours, 4 partiellement disponible, **5 disponible**.
     /// Seerr fait lui-même la comparaison bibliothèque Jellyfin / épisodes sortis ; la
     /// refaire ici serait une seconde vérité.
@@ -225,8 +225,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         private static string cache_key_of(string type, int tmdb_id) => $"{type}|{tmdb_id}";
 
         /// <summary>
-        /// Statut global et par saison. Les spéciaux (saison 0) sont écartés, comme dans
-        /// plugin précédent : Seerr ne les demande pas.
+        /// Statut global et par saison. Les spéciaux (saison 0) sont écartés : Seerr ne
+        /// les demande pas.
         /// </summary>
         private SeerrDetails? parse_details(string body)
         {

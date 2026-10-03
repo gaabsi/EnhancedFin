@@ -64,7 +64,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
             // Une seule ligne par média (le dernier épisode touché), d'où ROW_NUMBER.
             //
-            // Règle de masquage reprise de l'ancien plugin : l'item est caché tant que
+            // Règle de masquage : l'item est caché tant que
             // hidden_at >= updated_at. Reprendre la lecture rafraîchit updated_at et le
             // fait donc réapparaître automatiquement — comportement voulu, pas un effet
             // de bord.

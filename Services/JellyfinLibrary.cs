@@ -153,7 +153,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         ///
         /// Sert aux listes (notes, watchlist, « à noter ») qui doivent savoir lesquels
         /// de leurs items sont lisibles. Une requête bibliothèque par ligne en ferait
-        /// 234 pour les notes migrées, sur un Pi.
+        /// des centaines pour une collection de notes ordinaire.
         ///
         /// Le résultat est mis en cache quelques minutes : construire l'index parcourt
         /// toute la bibliothèque, ce qui est bon marché une fois mais pas à chaque
@@ -385,8 +385,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// ⚠️ On interroge les **épisodes**, pas les séries. `IsPlayed = true` sur une
         /// `Series` exige que **tous** ses épisodes soient vus : une série suivie à 5
         /// épisodes sur 8 n'en sort pas, alors que c'est précisément le cas qui nous
-        /// intéresse (seuil de notation à 5). Mesuré sur le serveur de test :
-        /// *Lessons in Chemistry*, 5 épisodes vus sur 8, ressort à `Played = false`.
+        /// intéresse (seuil de notation à 5) : mesuré, une série vue à 5 épisodes sur 8
+        /// ressort à `Played = false`.
         ///
         /// La série est ensuite relue par son identifiant pour son `ProviderId` TMDB :
         /// l'épisode porte le sien, qui désigne l'épisode et non l'œuvre.
@@ -438,7 +438,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// renseigné seulement si la série a été explicitement marquée vue. L'API REST
         /// de Jellyfin, elle, *calcule* `Played` et `UnplayedItemCount` en agrégeant
         /// les épisodes — d'où un `Played = true` visible dans `/Users/{id}/Items` et
-        /// un `false` côté plugin, pour la même série. Mesuré sur *Dans leur regard*.
+        /// un `false` côté plugin, pour la même série (mesuré).
         ///
         /// `GetCount` plutôt que `GetItemList().Count` : on veut un nombre, pas
         /// quelques centaines d'entités instanciées pour être aussitôt jetées.
@@ -476,7 +476,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// <summary>
         /// Date de dernière lecture, ou une date plancher quand Jellyfin n'en a pas.
         ///
-        /// Vérifié sur le serveur de test : un marquage manuel (sans lecture) pose bien
+        /// Vérifié : un marquage manuel (sans lecture) pose bien
         /// `LastPlayedDate`. Le repli ne sert donc qu'aux cas limites, où il relègue
         /// l'item en fin de liste plutôt que de le faire disparaître.
         /// </summary>

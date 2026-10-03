@@ -21,7 +21,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
         private static readonly Regex SqlIdentifier =
             new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
 
-        public string ConnectionString { get; }
+        private string ConnectionString { get; }
 
         public Db(IApplicationPaths app_paths)
         {
@@ -90,8 +90,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
 
             add_column(con, "media", "vote_average", "REAL");
             add_column(con, "media", "vote_count", "INTEGER");
-            // Bloc « infos » de la fiche. `directors` en texte joint (« A, B »), comme
-            // `screenwriters` et `studios` sur la même table.
+            // Bloc « infos » de la fiche. `directors` en texte joint (« A, B »).
             add_column(con, "media_detail", "release_date", "TEXT");
             add_column(con, "media_detail", "directors", "TEXT");
             // Dernière relecture TMDB du bloc. NULL = fiche jamais relue depuis
@@ -140,7 +139,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
 
         /// <summary>
         /// Crée le schéma s'il n'existe pas. Idempotent : sûr à chaque démarrage.
-        /// Le modèle complet et ses justifications sont dans DESIGN.md.
         /// </summary>
         private void ensure_schema()
         {
@@ -171,6 +169,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
                     media_key     TEXT PRIMARY KEY REFERENCES media(media_key) ON DELETE CASCADE,
                     overview      TEXT,
                     cast_json     TEXT,
+                    -- Inutilisées (ni écrites ni lues) ; gardées pour ne pas migrer les
+                    -- bases existantes.
                     screenwriters TEXT,
                     studios       TEXT
                 );
@@ -200,11 +200,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
                     rt_audience INTEGER,
                     fetched_at  TEXT NOT NULL
                 );
-
-                -- (`media_alias` a été retirée : aucune lecture ni écriture nulle part.
-                --  Les alias de sources externes — slug source externe, etc. — relèvent de
-                --  un autre plugin, qui définira son propre schéma. `CREATE TABLE IF NOT EXISTS`
-                --  ne supprime rien : une base existante garde sa table vide.)
 
                 -- ========== DONNÉES UTILISATEUR ==========
                 -- La PK (user_id, media_key) rend les doublons impossibles. L'ancien
@@ -262,8 +257,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
                 );
 
                 -- Référentiel partagé : deux utilisateurs suivant la même série
-                -- lisent la même ligne. Alimenté par TMDB uniquement — la
-                -- disponibilité sur les sources externes relève de un autre plugin.
+                -- lisent la même ligne. Alimenté par TMDB uniquement.
                 CREATE TABLE IF NOT EXISTS release (
                     media_key    TEXT    NOT NULL REFERENCES media(media_key) ON DELETE CASCADE,
                     season       INTEGER NOT NULL,

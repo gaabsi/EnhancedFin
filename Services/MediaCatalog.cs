@@ -311,24 +311,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             using var transaction = con.BeginTransaction();
 
             foreach (var ep in episodes)
-            {
-                using var cmd = con.CreateCommand();
-                cmd.CommandText = @"
-                    INSERT INTO release (media_key, season, episode, episode_name,
-                                         air_date, refreshed_at)
-                    VALUES ($k, $s, $e, $name, $air, $now)
-                    ON CONFLICT(media_key, season, episode) DO UPDATE SET
-                        episode_name = COALESCE(excluded.episode_name, release.episode_name),
-                        air_date     = COALESCE(excluded.air_date, release.air_date),
-                        refreshed_at = excluded.refreshed_at";
-                cmd.Parameters.AddWithValue("$k", media_key);
-                cmd.Parameters.AddWithValue("$s", ep.SeasonNumber);
-                cmd.Parameters.AddWithValue("$e", ep.EpisodeNumber);
-                cmd.Parameters.AddWithValue("$name", (object?)ep.Name ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("$air", (object?)ep.AirDate ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("$now", now);
-                cmd.ExecuteNonQuery();
-            }
+                upsert_release(con, media_key, ep.SeasonNumber, ep.EpisodeNumber, ep.Name, ep.AirDate, now);
 
             transaction.Commit();
             return episodes.Count;
@@ -361,22 +344,45 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             var date = movie.Date is { Length: >= 10 } d ? d : null;
 
             using var con = _db.open();
+            upsert_release(con, media_key, 0, 0, movie.DisplayTitle, date,
+                           DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+
+            return 1;
+        }
+
+        /// <summary>
+        /// Écrit ou met à jour une sortie. Un nom ou une date absents ne remplacent
+        /// jamais une valeur déjà connue.
+        ///
+        /// Parametres :
+        /// - con (SqliteConnection) : connexion ouverte
+        /// - media_key (string) : clé du média
+        /// - season (int) : saison (0 pour un film)
+        /// - episode (int) : épisode (0 pour un film)
+        /// - name (string | null) : nom de l'épisode, ou titre du film
+        /// - air_date (string | null) : date de sortie `AAAA-MM-JJ`
+        /// - now (string) : horodatage du rafraîchissement
+        /// </summary>
+        private static void upsert_release(
+            SqliteConnection con, string media_key, int season, int episode,
+            string? name, string? air_date, string now)
+        {
             using var cmd = con.CreateCommand();
             cmd.CommandText = @"
                 INSERT INTO release (media_key, season, episode, episode_name,
                                      air_date, refreshed_at)
-                VALUES ($k, 0, 0, $name, $air, $now)
+                VALUES ($k, $s, $e, $name, $air, $now)
                 ON CONFLICT(media_key, season, episode) DO UPDATE SET
                     episode_name = COALESCE(excluded.episode_name, release.episode_name),
                     air_date     = COALESCE(excluded.air_date, release.air_date),
                     refreshed_at = excluded.refreshed_at";
             cmd.Parameters.AddWithValue("$k", media_key);
-            cmd.Parameters.AddWithValue("$name", movie.DisplayTitle);
-            cmd.Parameters.AddWithValue("$air", (object?)date ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+            cmd.Parameters.AddWithValue("$s", season);
+            cmd.Parameters.AddWithValue("$e", episode);
+            cmd.Parameters.AddWithValue("$name", (object?)name ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$air", (object?)air_date ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$now", now);
             cmd.ExecuteNonQuery();
-
-            return 1;
         }
 
         /// <summary>

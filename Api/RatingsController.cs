@@ -62,8 +62,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
         /// <summary>
         /// Nombre d'épisodes d'une série à avoir vus avant de proposer de la noter.
-        /// Reprend le seuil de l'ancien plugin : noter une série sur un seul épisode
-        /// n'a pas de sens.
+        /// Noter une série sur un seul épisode n'a pas de sens.
         /// </summary>
         private const int MinEpisodesForTv = 5;
 
@@ -246,8 +245,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// ⚠️ La clause « terminée » n'est pas un confort : sans elle, une œuvre plus
         /// courte que le seuil ne pouvait **jamais** être proposée, même vue de bout
         /// en bout. Toutes les mini-séries de moins de cinq épisodes étaient invisibles
-        /// pour cette section, à vie. Constaté sur *Dans leur regard* : quatre
-        /// épisodes, intégralement vue, jamais proposée.
+        /// pour cette section, à vie.
         ///
         /// Le seuil garde son rôle — écarter une série longue à peine commencée — mais
         /// ne décide plus seul.
@@ -261,8 +259,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// Médias vus d'après la table `playback` du plugin.
         ///
         /// C'est la seule source qui connaisse les médias **sans fichier** sur le
-        /// serveur : ce que l'ancien plugin suivait hors bibliothèque, et que la
-        /// migration a repris.
+        /// serveur.
         ///
         /// Parametres :
         /// - con (SqliteConnection) : connexion ouverte
@@ -391,13 +388,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             var rows = new Dictionary<string, MediaRow>(StringComparer.Ordinal);
             if (keys.Count == 0) return rows;
 
-            var placeholders = string.Join(",", keys.Select((_, i) => $"$k{i}"));
-
             using var cmd = con.CreateCommand();
             cmd.CommandText =
-                $"SELECT media_key, title, year, poster_url, backdrop_url FROM media WHERE media_key IN ({placeholders})";
-            for (var i = 0; i < keys.Count; i++)
-                cmd.Parameters.AddWithValue($"$k{i}", keys[i]);
+                $"SELECT media_key, title, year, poster_url, backdrop_url FROM media WHERE media_key IN ({bind_keys(cmd, keys)})";
 
             using var rd = cmd.ExecuteReader();
             while (rd.Read())

@@ -234,10 +234,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
 
         /// <summary>
         /// Nom du srt externe d'une piste, selon la convention de Jellyfin :
-        /// `Coco.fr.srt`, `Kiki.fr.forced.srt`, `Film.en.sdh.srt`.
+        /// `Film.fr.srt`, `Film.fr.forced.srt`, `Film.en.sdh.srt`.
         ///
         /// Le forcé se lit aussi dans le titre : certaines pistes ne le disent que là
-        /// (« FR Forced ASS » chez Kiki), sans le drapeau.
+        /// (« FR Forced ASS »), sans le drapeau.
         ///
         /// Parametres :
         /// - video_path (string) : chemin de la vidéo

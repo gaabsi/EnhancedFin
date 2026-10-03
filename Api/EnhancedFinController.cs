@@ -73,8 +73,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     /// de l'appelant, validation des clés média et format d'erreur.
     ///
     /// Tout controller qui en hérite est authentifié par défaut — on ne peut pas
-    /// oublier l'attribut et exposer un endpoint par inadvertance, ce qui est
-    /// précisément ce qui est arrivé à l'ancien plugin (cf. SECURITY_AUDIT.md).
+    /// oublier l'attribut et exposer un endpoint par inadvertance.
     /// </summary>
     [ApiController]
     // ⚠️ [Authorize] **sans politique nommée**, et ce n'est pas un oubli.
@@ -97,8 +96,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// <summary>
         /// Nombre maximum d'items qu'une route de liste accepte de renvoyer.
         ///
-        /// 500 et non 200 : les 234 notes de la production étaient tronquées, ce qui
-        /// ne se voyait pas tant que « Mes notes » n'était qu'un aperçu. La section
+        /// 500 et non 200 : une collection de quelques centaines de notes était tronquée,
+        /// ce qui ne se voyait pas tant que « Mes notes » n'était qu'un aperçu. La section
         /// étant désormais dépliable, la troncature deviendrait visible — et
         /// inexplicable pour l'utilisateur. La borne reste là pour ce qu'elle fait
         /// vraiment : empêcher qu'une requête rende une table entière.
@@ -114,8 +113,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// Seuil unique, volontairement partagé : il décide à la fois de la sortie du
         /// Continue Watching et de l'entrée dans « à noter ». Deux valeurs différentes
         /// rendraient un épisode simultanément « en cours » et « fini ».
-        ///
-        /// 0,9 reprend le `FINISHED_RATIO` de l'ancien plugin.
         /// </summary>
         /// <remarks>
         /// `static readonly` et non `const` : le seuil est interpolé dans
@@ -236,11 +233,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         }
 
         /// <summary>
-        /// Erreur RFC 7807, enrichie de `success` et `message` pour que le front JS
-        /// existant fonctionne sans modification. Ces deux champs seront retirables
-        /// une fois le JS migré, sans impact sur les clients Swift.
-        /// </summary>
-        /// <summary>
         /// Vrai si l'écriture a échoué parce que le média manque au référentiel : violation
         /// de clé étrangère (code étendu 787). Le code 19 seul couvre toutes les contraintes
         /// (`CHECK`, `NOT NULL`, `UNIQUE`), qu'il ne faut pas présenter comme « média inconnu ».
@@ -251,6 +243,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         internal ObjectResult too_many_requests() =>
             problem(429, "Trop de requêtes", "Réessayez dans une minute.");
 
+        /// <summary>Erreur au format RFC 7807 (`ProblemDetails`), la même pour toutes les routes.</summary>
         protected ObjectResult problem(int status, string title, string detail)
         {
             var pd = new ProblemDetails
@@ -260,8 +253,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 Status = status,
                 Detail = detail,
             };
-            pd.Extensions["success"] = false;
-            pd.Extensions["message"] = detail;
 
             return StatusCode(status, pd);
         }
@@ -446,9 +437,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             var states = new Dictionary<string, MyState>(StringComparer.Ordinal);
             if (keys.Count == 0) return states;
 
-            var placeholders = string.Join(",", keys.Select((_, i) => $"$k{i}"));
-
             using var cmd = con.CreateCommand();
+            var placeholders = bind_keys(cmd, keys);
             cmd.CommandText = $@"
                 SELECT m.media_key,
                        (SELECT score FROM rating    WHERE user_id = $u AND media_key = m.media_key),
@@ -457,8 +447,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 FROM media m
                 WHERE m.media_key IN ({placeholders}) AND {SqlIsMine}";
             cmd.Parameters.AddWithValue("$u", user_id);
-            for (var i = 0; i < keys.Count; i++)
-                cmd.Parameters.AddWithValue($"$k{i}", keys[i]);
 
             using var rd = cmd.ExecuteReader();
             while (rd.Read())
@@ -469,6 +457,24 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                     Known: true);
 
             return states;
+        }
+
+        /// <summary>
+        /// Lie un lot de clés aux paramètres `$k0…$kN` d'une commande, et renvoie les
+        /// marqueurs à placer dans `IN (...)`. Paramètres liés et non texte interpolé :
+        /// la seule borne est celle de SQLite (32 766 paramètres).
+        ///
+        /// Parametres :
+        /// - cmd (SqliteCommand) : la commande
+        /// - keys (IReadOnlyList&lt;string&gt;) : les clés
+        ///
+        /// Output :
+        /// - placeholders (string) : « $k0,$k1,… »
+        /// </summary>
+        protected static string bind_keys(SqliteCommand cmd, IReadOnlyList<string> keys)
+        {
+            for (var i = 0; i < keys.Count; i++) cmd.Parameters.AddWithValue($"$k{i}", keys[i]);
+            return string.Join(",", keys.Select((_, i) => $"$k{i}"));
         }
 
         /// <summary>Tronque une valeur venue du client avant de la renvoyer en écho.</summary>
