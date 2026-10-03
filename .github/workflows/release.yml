@@ -17,18 +17,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Code du tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "10.0.x"
 
       - name: Version et changelog
         run: |
           echo "VERSION=${GITHUB_REF_NAME#v}.0" >> "$GITHUB_ENV"
-          # Le message du tag annoté sert de changelog.
+          # Le message du tag annoté sert de changelog. `checkout` récupère le tag sans
+          # son message (tag « léger ») : on le re-récupère, sinon on lirait celui du commit.
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > changelog.txt
 
       - name: Compilation
