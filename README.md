@@ -1,80 +1,86 @@
-# EnhancedFin
+<div align="center">
+  <h1>EnhancedFin</h1>
+  <img src="https://img.shields.io/badge/Jellyfin-12-9962be"/>
+  <img src="https://img.shields.io/badge/.NET-10-512bd4"/>
+  <img src="https://img.shields.io/badge/license-GPL--3.0-blue"/>
+</div>
 
-A Jellyfin plugin that adds a per-user data layer on top of your library: ratings,
-watchlist, continue watching, followed shows and a release calendar — all keyed on
-TMDB, so they work for titles you **don't** have on the server too.
+<p align="center">
+  <b>EnhancedFin</b> is a <a href="https://github.com/jellyfin/jellyfin">Jellyfin</a> server plugin that adds a personal layer on top of your library: ratings, watchlist, continue watching, followed shows and a release calendar. Everything is keyed on TMDB, so it also works for titles you <b>don't</b> have on the server. It powers the discovery features of <a href="https://github.com/gaabsi/SweetFin"><b>SweetFin</b></a>, the iOS client, and exposes a REST API any client can use.
+</p>
 
-It exposes a REST API under `/api/EnhancedFin/v1`, meant to be consumed by a custom
-client (it ships no web UI of its own).
+## ✨ Features
 
-## Features
-
-- **Ratings** — rate movies and shows, and get a "to rate" list built from what you
+- **Ratings**: rate movies and shows, and get a "to rate" list built from what you
   actually watched (a movie, a finished show, or at least 5 episodes).
-- **Watchlist** — with genres, so clients can split it into movies / shows / anime.
-- **Continue watching** — one entry per title, with a hide/restore mechanism.
-- **Follows & calendar** — follow a show, get its upcoming episodes grouped by day.
-- **Search** — merges three sources: your own data, TMDB, and the Jellyfin library
-  (each result tells whether it's playable on the server).
-- **Trending** — TMDB weekly trends, filterable by movie / tv / anime.
-- **Rich media pages** — metadata, cast, directors, seasons and episodes with
-  watched state, Rotten Tomatoes scores (via MDBList) and Seerr availability.
-- **Seerr requests** — request a movie or seasons on behalf of the calling user.
-- **SyncPlay** — invite a user into your group, and automatically stop groups that
+- **Watchlist**: with genres, so clients can split it into movies, shows and anime.
+- **Continue watching**: one entry per title, with hide and restore.
+- **Follows and calendar**: follow a show, get its upcoming episodes grouped by day.
+- **Search**: merges your own data, TMDB and the Jellyfin library (each result tells
+  whether it's playable on the server).
+- **Trending**: TMDB weekly trends, filterable by movie, show or anime.
+- **Rich media pages**: metadata, cast, directors, seasons and episodes with watched
+  state, Rotten Tomatoes scores (via MDBList) and Seerr availability.
+- **Seerr requests**: request a movie or seasons on behalf of the calling user.
+- **SyncPlay**: invite a user into your group, and automatically stop groups that
   everyone left mid-playback.
-- **ASS → SRT** — converts embedded ASS subtitle tracks to external `.srt` files
-  (see [Scheduled tasks](#scheduled-tasks)).
+- **ASS → SRT** (opt-in): converts embedded ASS subtitles to external `.srt` files,
+  for players that cannot render ASS.
 
-## Compatibility
+Each user only ever sees their own data, and only items from the libraries they can
+access on the server.
 
-| Jellyfin | .NET | Branch |
-|---|---|---|
-| **12.x** | net10.0 | `main` |
-| 10.11 | net9.0 | `jf-10.11` |
+## 🧩 Compatibility
 
-Jellyfin 12 broke plugin binary compatibility, so one DLL cannot serve both.
+**Jellyfin 12.x** (`net10.0`). Jellyfin 12 broke plugin binary compatibility: this
+plugin does not load on 10.11 or earlier.
 
 > **Note** — `Microsoft.Data.Sqlite` must match the exact version bundled with your
 > Jellyfin server (10.0.11 for Jellyfin 12.1). Jellyfin loads its own copy; a higher
 > version in the plugin makes it fail at startup with a `FileNotFoundException`.
 
-## Build
+## 🛠️ Build
 
-Requires the .NET SDK matching your branch (10 for `main`, 9 for `jf-10.11`).
+Requires the .NET 10 SDK.
 
 ```bash
-dotnet build
-# → bin/Debug/net10.0/Jellyfin.Plugin.EnhancedFin.dll
+dotnet build -c Release
+# → bin/Release/net10.0/Jellyfin.Plugin.EnhancedFin.dll
 ```
 
-Warnings are treated as errors.
+Warnings are treated as errors, and builds are reproducible (no local paths in the
+binary).
 
-## Installation
+## 📦 Installation
 
 1. Create `<jellyfin-config>/plugins/EnhancedFin_1.0.0.0/` and copy the DLL into it.
 2. Restart Jellyfin. The plugin creates its configuration file and its database:
    - `<jellyfin-config>/plugins/configurations/Jellyfin.Plugin.EnhancedFin.xml`
-   - `<jellyfin-config>/plugins/configurations/EnhancedFin/EnhancedFin.db` (SQLite)
-3. Fill in the configuration (below) and restart again.
+   - `<jellyfin-config>/plugins/configurations/EnhancedFin/` (SQLite, in WAL mode:
+     back up the whole folder, not just `EnhancedFin.db`)
+3. Fill in the settings page (below).
 
 > If the plugin crashed once, Jellyfin marks it `Malfunctioned` in its `meta.json`
 > and stops loading it, even after a fix. Set `"status"` back to `"Active"` and restart.
 
-## Configuration
+## ⚙️ Configuration
 
-There is no settings page: edit the XML file directly.
+Open **Dashboard → Plugins → EnhancedFin** (administrators only). Each key has a
+**Test** button that checks what you typed before saving, and changes apply
+immediately, without a restart.
 
-| Key | Required | Purpose |
-|---|---|---|
-| `TmdbApiKey` | **yes** | metadata, search, trending, release dates |
-| `MdblistApiKey` | no | Rotten Tomatoes scores — omitted if empty |
-| `SeerrUrl` / `SeerrApiKey` | no | availability and requests — omitted if empty |
-| `ConvertAssSubtitles` | no (`false`) | **rewrites your files**: after each library scan, converts embedded ASS subtitles of `.mkv` files to external `.srt` and removes the converted tracks (stream copy, no re-encoding). Useful for players that cannot render ASS. ASS styling is lost. |
-| `KeepAssBackup` | no (`true`) | keeps each original as a hidden `.<name>.mkv.ass-backup` next to the film. Doubles disk usage until you delete the backups. |
+| Setting | Required | Purpose | Where to get it |
+|---|---|---|---|
+| TMDB API key | **yes** | metadata, search, trending, release dates | free account on [themoviedb.org](https://www.themoviedb.org/settings/api) → Settings → API → "API Key" (v3) |
+| MDBList API key | no | Rotten Tomatoes scores, omitted if empty | free account on [mdblist.com](https://mdblist.com/preferences/) → Preferences → API key (1,000 requests a day; scores are cached 7 days) |
+| Seerr URL + API key | no | availability and requests, omitted if empty | in Jellyseerr / Overseerr: Settings → General → API Key; the URL is how the Jellyfin server reaches Seerr |
+| Convert ASS subtitles | no (off) | **rewrites your files**: after each library scan, converts embedded ASS subtitles of `.mkv` files to external `.srt` and removes the converted tracks (stream copy, no re-encoding). For players that cannot render ASS; ASS styling is lost. | |
+| Keep ASS backup | no (on) | keeps each original as a hidden `.<file>.ass-backup` (e.g. `.Movie.mkv.ass-backup`) next to it. Doubles disk usage until you delete the backups. | |
 
-These keys are secrets: the XML file is git-ignored, keep it that way.
+The settings are stored in `<jellyfin-config>/plugins/configurations/Jellyfin.Plugin.EnhancedFin.xml`,
+readable by administrators only. Never share or commit this file: it holds your API keys.
 
-## API
+## 🔌 API
 
 Base path: `/api/EnhancedFin/v1`. Every route requires a Jellyfin user token
 (`Authorization: MediaBrowser Token="…"` header; Jellyfin 12 rejects the legacy `X-Emby-Token`).
@@ -113,6 +119,7 @@ Media are identified by a **media key**, `"{type}:{tmdbId}"`, e.g. `movie:550` o
 | `GET` | `/seerr/{key}` | Seerr status and seasons |
 | `POST` | `/me/requests/{key}` | request on Seerr (`{ seasons: [..] }` for a show) |
 | `POST` | `/syncplay/invite` | invite a user into my SyncPlay group (`{ groupId, userId }`) |
+| `POST` | `/admin/check/{tmdb\|mdblist\|seerr}` | **admins only**: test a key before saving it (`{ key, url? }`), returns `{ ok, message }` |
 
 Conventions:
 
@@ -121,27 +128,55 @@ Conventions:
 - **Writes are lazy**: a `PUT` on a media unknown to the database fetches it from
   TMDB first. `GET` and `DELETE` never create data.
 - **Errors** follow RFC 7807 (`ProblemDetails`).
+- **Rate limits**, per user: 300 requests per minute overall, 60 per minute on routes
+  that call TMDB, MDBList or Seerr (media pages, seasons, search, trending, person,
+  writes), 5 SyncPlay invitations per minute. Over the limit, the route answers `429`.
 
-## Scheduled tasks
+## ⏱️ Scheduled tasks
 
 Both appear in the dashboard under the **EnhancedFin** category.
 
 | Task | Trigger | What it does |
 |---|---|---|
 | Media refresh | daily, 4 AM | completes incomplete media records and refreshes release dates of followed shows, in batches of 50 |
-| ASS → SRT | after each library scan + manual | converts embedded ASS tracks to `<name>.<lang>[.sdh][.forced].srt`, then remuxes the file without them |
+| ASS → SRT | after each library scan + manual, **only if `ConvertAssSubtitles` is on** | converts embedded ASS tracks to `<name>.<lang>[.sdh][.forced].srt`, then remuxes the file without them |
 
-> **Warning** — the ASS task **rewrites your media files**. The remux is verified
-> (track count, duration) before an atomic rename, and the original is kept as a
-> hidden `.<name>.ass-backup` next to it. On a read-only library it only logs what
-> it would have done.
+> **Warning** — when enabled, the ASS task **rewrites your media files**. Only tracks
+> whose `.srt` was just written are removed (a second track in the same language, or
+> one whose `.srt` already exists, is kept). Each removed track is checked to be ASS
+> in the file itself, the remux must keep exactly the other tracks and the duration,
+> and the original is replaced in a single atomic rename, kept as a hidden backup if
+> `KeepAssBackup` is on. On a read-only library it only logs what it would have done.
 
-## Project layout
+## 🗂️ Project layout
 
 ```
-Api/            controllers — all inherit EnhancedFinController (auth, identity, errors)
+Api/            controllers — all inherit EnhancedFinController (auth, identity, rate limits, errors)
 Services/       TMDB, MDBList, Seerr clients, Jellyfin library index, SyncPlay guard
 Data/Db.cs      SQLite schema and connection
 Tasks/          scheduled tasks
-Configuration/  plugin settings
+Configuration/  plugin settings and their dashboard page
 ```
+
+## 🔒 Privacy
+
+All data stays on **your** Jellyfin server, in the plugin's SQLite database. Only the
+server talks to third parties: TMDB (metadata), and MDBList and Seerr if you configure
+them. Clients never see your API keys.
+
+## 🙏 Acknowledgements
+
+EnhancedFin is built on [Jellyfin](https://jellyfin.org) and uses data from
+[TMDB](https://www.themoviedb.org) and [MDBList](https://mdblist.com). Thanks to their
+contributors. This product uses the TMDB API but is not endorsed or certified by TMDB.
+
+EnhancedFin is an independent project, not affiliated with or endorsed by Jellyfin.
+
+## ☕ Support
+
+If EnhancedFin is useful to you, you can [buy me a coffee](https://buymeacoffee.com/gaabsi).
+
+## 📄 License
+
+EnhancedFin is distributed under the **GNU General Public License v3.0**, see
+[LICENSE](LICENSE), like Jellyfin itself.
