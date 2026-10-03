@@ -1,0 +1,12 @@
+[
+  {
+    "guid": "2dd4485f-d630-456e-9ed4-6bb35c46ebf9",
+    "name": "EnhancedFin",
+    "description": "Ratings, watchlist, resume, follows and release calendar for Jellyfin users.",
+    "overview": "A personal layer on top of your library, keyed on TMDB: ratings, watchlist, continue watching, followed shows and a release calendar. Powers the discovery features of the SweetFin iOS client.",
+    "owner": "gaabsi",
+    "category": "General",
+    "imageUrl": "",
+    "versions": []
+  }
+]

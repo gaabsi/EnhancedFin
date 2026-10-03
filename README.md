@@ -53,12 +53,20 @@ binary).
 
 ## 📦 Installation
 
-1. Create `<jellyfin-config>/plugins/EnhancedFin_1.0.0.0/` and copy the DLL into it.
-2. Restart Jellyfin. The plugin creates its configuration file and its database:
-   - `<jellyfin-config>/plugins/configurations/Jellyfin.Plugin.EnhancedFin.xml`
-   - `<jellyfin-config>/plugins/configurations/EnhancedFin/` (SQLite, in WAL mode:
-     back up the whole folder, not just `EnhancedFin.db`)
+**From the plugin repository** (recommended, with automatic updates):
+
+1. In Jellyfin, open **Dashboard → Plugins → Repositories** and add:
+   ```
+   https://raw.githubusercontent.com/gaabsi/EnhancedFin/main/manifest.json
+   ```
+2. Open **Catalog**, install **EnhancedFin** and restart Jellyfin.
 3. Fill in the settings page (below).
+
+**Manually**: download the zip of the latest [release](https://github.com/gaabsi/EnhancedFin/releases),
+extract the DLL into `<jellyfin-config>/plugins/EnhancedFin/` and restart Jellyfin.
+
+The plugin stores its data in `<jellyfin-config>/plugins/configurations/EnhancedFin/`
+(SQLite, in WAL mode: back up the whole folder, not just `EnhancedFin.db`).
 
 > If the plugin crashed once, Jellyfin marks it `Malfunctioned` in its `meta.json`
 > and stops loading it, even after a fix. Set `"status"` back to `"Active"` and restart.
