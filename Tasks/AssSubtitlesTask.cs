@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
@@ -30,26 +31,28 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
     /// 1. Jellyfin la convertit en srt (`ISubtitleEncoder`, l'outil qui sert les clients) ;
     /// 2. le srt est écrit en `&lt;film&gt;.&lt;lang&gt;[.sdh][.forced].srt`, nom que Jellyfin
     ///    reconnaît comme sous-titre externe ;
-    /// 3. le mkv est remuxé **sans** ses pistes ASS (copie, aucun réencodage), vérifié,
-    ///    puis substitué à l'original par un renommage atomique.
+    /// 3. le mkv est remuxé **sans** les pistes converties (copie, aucun réencodage),
+    ///    vérifié, puis substitué à l'original par un renommage atomique.
     ///
-    /// Idempotente : un mkv sans ASS n'est pas touché, un srt existant n'est pas réécrit.
-    /// Sur un dossier en lecture seule (serveur de test), rien n'est écrit : la tâche
-    /// journalise ce qu'elle aurait fait.
+    /// **Désactivée par défaut** (`ConvertAssSubtitles`) : elle réécrit les fichiers de la
+    /// bibliothèque. Idempotente : un mkv sans ASS n'est pas touché, un srt existant n'est
+    /// pas réécrit. Sur un dossier en lecture seule, rien n'est écrit : la tâche journalise
+    /// ce qu'elle aurait fait.
     /// </summary>
     public class AssSubtitlesTask : IScheduledTask, ILibraryPostScanTask
     {
-        /// <summary>
-        /// Garde l'original, renommé en fichier caché à côté du film (Jellyfin ignore les
-        /// fichiers qui commencent par un point). Sécurité du premier passage en prod :
-        /// à repasser à false une fois le résultat vérifié, puis supprimer les sauvegardes.
-        /// </summary>
-        private const bool KeepBackup = true;
-
         /// <summary>Écart de durée toléré entre l'original et le remux, en secondes.</summary>
         private const double DurationTolerance = 1.0;
 
         private static readonly string[] AssCodecs = { "ass", "ssa" };
+
+        /// <summary>
+        /// Une seule exécution à la fois : le passage après un scan et le bouton du tableau
+        /// de bord écriraient sinon le même fichier temporaire.
+        /// </summary>
+        private static readonly SemaphoreSlim Gate = new(1, 1);
+
+        private static readonly Regex LanguageCode = new("^[a-z]{2,3}$", RegexOptions.Compiled);
 
         private readonly ILibraryManager _library;
         private readonly IMediaSourceManager _media_sources;
@@ -92,6 +95,30 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
             => Run(progress, cancellation);
 
         public async Task Run(IProgress<double> progress, CancellationToken cancellation)
+        {
+            if (Plugin.Instance?.Configuration.ConvertAssSubtitles != true)
+            {
+                progress.Report(100);
+                return;
+            }
+
+            if (!await Gate.WaitAsync(0, cancellation))
+            {
+                _logger.LogInformation("[EnhancedFin] Sous-titres ASS : une conversion est déjà en cours");
+                return;
+            }
+
+            try
+            {
+                await convert_all(progress, cancellation);
+            }
+            finally
+            {
+                Gate.Release();
+            }
+        }
+
+        private async Task convert_all(IProgress<double> progress, CancellationToken cancellation)
         {
             var videos = find_videos_with_ass();
             if (videos.Count == 0)
@@ -165,45 +192,44 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
         /// </summary>
         private async Task convert_video(Video video, List<MediaStream> streams, CancellationToken cancellation)
         {
-            var srts = new Dictionary<string, byte[]>();
+            var folder = Path.GetDirectoryName(video.Path)!;
+            var writable = is_writable(folder);
+
+            // ⚠️ Une piste n'est retirée du mkv que si **son** srt vient d'être écrit. Deux
+            // pistes de même langue et même type (« Full » et « Signs »), ou un srt déjà
+            // présent, laissent la piste ASS en place : son texte n'existe nulle part
+            // ailleurs, la retirer le perdrait.
+            var converted = new List<MediaStream>();
+            var planned = new HashSet<string>();
             foreach (var stream in streams)
             {
                 var srt_path = srt_path_for(video.Path, stream);
-                if (srts.ContainsKey(srt_path))
+                if (!planned.Add(srt_path) || File.Exists(srt_path))
                 {
-                    // Deux pistes de même langue et même type : on garde la première.
-                    _logger.LogWarning("[EnhancedFin] {Path} : piste {Index} ignorée, {Srt} déjà prévu", video.Path, stream.Index, srt_path);
+                    _logger.LogWarning("[EnhancedFin] {Path} : piste {Index} gardée, {Srt} existe déjà", video.Path, stream.Index, srt_path);
                     continue;
                 }
 
-                srts[srt_path] = await extract_srt(video, stream, cancellation);
+                if (!writable)
+                {
+                    _logger.LogInformation("[EnhancedFin] Lecture seule, aurait converti la piste {Index} en {Srt}", stream.Index, srt_path);
+                    continue;
+                }
+
+                await File.WriteAllBytesAsync(srt_path, await extract_srt(video, stream, cancellation), cancellation);
+                converted.Add(stream);
             }
 
-            var folder = Path.GetDirectoryName(video.Path)!;
-            if (!is_writable(folder))
-            {
-                foreach (var (srt_path, content) in srts)
-                    _logger.LogInformation("[EnhancedFin] Lecture seule, aurait écrit {Srt} ({Bytes} octets)", srt_path, content.Length);
-                _logger.LogInformation(
-                    "[EnhancedFin] Lecture seule, aurait retiré les pistes {Indexes} de {Path}",
-                    string.Join(", ", streams.Select(s => s.Index)), video.Path);
-                return;
-            }
+            if (converted.Count == 0) return;
 
-            foreach (var (srt_path, content) in srts)
-            {
-                // Un srt déjà là (passage précédent interrompu, ou fourni à la main) fait foi.
-                if (!File.Exists(srt_path)) await File.WriteAllBytesAsync(srt_path, content, cancellation);
-            }
-
-            await remove_streams(video.Path, streams, cancellation);
+            await remove_streams(video.Path, converted, cancellation);
 
             _providers.QueueRefresh(
                 video.Id,
                 new MetadataRefreshOptions(new DirectoryService(_file_system)),
                 RefreshPriority.High);
 
-            _logger.LogInformation("[EnhancedFin] {Path} : {Count} pistes ASS converties en srt", video.Path, srts.Count);
+            _logger.LogInformation("[EnhancedFin] {Path} : {Count} pistes ASS converties en srt", video.Path, converted.Count);
         }
 
         /// <summary>
@@ -222,9 +248,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
         /// </summary>
         private string srt_path_for(string video_path, MediaStream stream)
         {
+            // La langue vient des métadonnées du fichier : un `/` ou un `..` y écrirait le srt
+            // hors du dossier du film. Seul un code de langue passe.
             var language = _localization.FindLanguageInfo(stream.Language ?? string.Empty)?.TwoLetterISOLanguageName
                            ?? stream.Language
-                           ?? "und";
+                           ?? string.Empty;
+            if (!LanguageCode.IsMatch(language)) language = "und";
             var title = stream.Title ?? string.Empty;
             var is_forced = stream.IsForced || title.Contains("forced", StringComparison.OrdinalIgnoreCase);
 
@@ -261,7 +290,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
 
         /// <summary>
         /// Réécrit le mkv sans les pistes données, vérifie le résultat, puis le substitue
-        /// à l'original. Tant que le renommage final n'a pas eu lieu, l'original est intact.
+        /// à l'original. Tant que la substitution n'a pas eu lieu, l'original est intact.
         ///
         /// Parametres :
         /// - path (string) : chemin du mkv
@@ -273,29 +302,43 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
             var folder = Path.GetDirectoryName(path)!;
             var name = Path.GetFileName(path);
             var temp = Path.Combine(folder, "." + name + ".remux.mkv");
+            var removed = streams.Select(s => s.Index).ToHashSet();
+
+            // Les index viennent de la base de Jellyfin, qui peut être en retard sur le
+            // fichier (remplacé depuis le dernier scan) : chaque piste retirée doit être,
+            // **dans le fichier**, un sous-titre ASS. Sinon `-map -0:i` retirerait une
+            // piste audio ou vidéo.
+            var (original, original_duration) = await probe(path, cancellation);
+            foreach (var index in removed)
+            {
+                if (index >= original.Count || original[index].Type != "subtitle" || !AssCodecs.Contains(original[index].Codec))
+                    throw new InvalidOperationException($"piste {index} absente ou pas en ASS dans le fichier");
+            }
 
             // `-map 0` garde tout (vidéo, audio, chapitres, pièces jointes), puis chaque
             // `-map -0:i` retire une piste ASS. `-c copy` : aucun réencodage.
             var args = new List<string> { "-nostdin", "-v", "error", "-y", "-i", path, "-map", "0" };
-            foreach (var stream in streams) args.AddRange(new[] { "-map", "-0:" + stream.Index.ToString(CultureInfo.InvariantCulture) });
+            foreach (var index in removed) args.AddRange(new[] { "-map", "-0:" + index.ToString(CultureInfo.InvariantCulture) });
             args.AddRange(new[] { "-c", "copy", "-f", "matroska", temp });
 
             try
             {
                 await run(_encoder.EncoderPath, args, cancellation);
 
-                var (original_streams, original_duration) = await probe(path, cancellation);
-                var (remux_streams, remux_duration) = await probe(temp, cancellation);
-                if (remux_streams != original_streams - streams.Count
-                    || Math.Abs(remux_duration - original_duration) > DurationTolerance)
+                // Le remux doit garder exactement les autres pistes, dans le même ordre.
+                var expected = original.Where((_, index) => !removed.Contains(index)).ToList();
+                var (remux, remux_duration) = await probe(temp, cancellation);
+                if (!remux.SequenceEqual(expected) || Math.Abs(remux_duration - original_duration) > DurationTolerance)
                 {
                     throw new InvalidOperationException(
-                        $"remux incohérent : {remux_streams} pistes / {remux_duration:F1} s, "
-                        + $"attendu {original_streams - streams.Count} / {original_duration:F1} s");
+                        $"remux incohérent : {remux.Count} pistes / {remux_duration:F1} s, "
+                        + $"attendu {expected.Count} / {original_duration:F1} s");
                 }
 
-                if (KeepBackup) File.Move(path, Path.Combine(folder, "." + name + ".ass-backup"), overwrite: true);
-                File.Move(temp, path, overwrite: true);
+                // Substitution en un seul renommage : à aucun moment le film n'est absent
+                // du dossier (le moniteur de Jellyfin le retirerait de la bibliothèque).
+                if (Plugin.Instance?.Configuration.KeepAssBackup != false) File.Replace(temp, path, Path.Combine(folder, "." + name + ".ass-backup"));
+                else File.Move(temp, path, overwrite: true);
             }
             finally
             {
@@ -304,25 +347,30 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
         }
 
         /// <summary>
-        /// Nombre de pistes et durée d'un fichier, lus par ffprobe.
+        /// Pistes et durée d'un fichier, lues par ffprobe.
         ///
         /// Parametres :
         /// - path (string) : le fichier
         /// - cancellation (CancellationToken) : annulation de la tâche
         ///
         /// Output :
-        /// - probe ((int, double)) : nombre de pistes, durée en secondes
+        /// - probe ((List, double)) : type et codec de chaque piste, par index ; durée en secondes
         /// </summary>
-        private async Task<(int Streams, double Duration)> probe(string path, CancellationToken cancellation)
+        private async Task<(List<(string Type, string Codec)> Streams, double Duration)> probe(string path, CancellationToken cancellation)
         {
-            // Une ligne par piste (« stream »), puis la durée du conteneur.
+            // Une ligne par piste (« index,codec_name,codec_type »), puis la durée du conteneur.
             var output = await run(
                 _encoder.ProbePath,
-                new[] { "-v", "error", "-show_entries", "stream=index:format=duration", "-of", "csv=p=0", path },
+                new[] { "-v", "error", "-show_entries", "stream=index,codec_name,codec_type:format=duration", "-of", "csv=p=0", path },
                 cancellation);
             var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-            return (lines.Length - 1, double.Parse(lines[^1], CultureInfo.InvariantCulture));
+            var streams = lines[..^1]
+                .Select(line => line.Split(','))
+                .Select(parts => (Type: parts[^1].ToLowerInvariant(), Codec: parts.Length > 2 ? parts[1].ToLowerInvariant() : string.Empty))
+                .ToList();
+
+            return (streams, double.Parse(lines[^1], CultureInfo.InvariantCulture));
         }
 
         /// <summary>
@@ -349,7 +397,17 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
             using var process = Process.Start(info)!;
             var output = process.StandardOutput.ReadToEndAsync(cancellation);
             var error = process.StandardError.ReadToEndAsync(cancellation);
-            await process.WaitForExitAsync(cancellation);
+            try
+            {
+                await process.WaitForExitAsync(cancellation);
+            }
+            catch (OperationCanceledException)
+            {
+                // Sans ça, ffmpeg continue seul : il remplit le disque d'un fichier déjà
+                // supprimé et occupe le processeur jusqu'au bout du film.
+                process.Kill(entireProcessTree: true);
+                throw;
+            }
 
             if (process.ExitCode != 0)
                 throw new InvalidOperationException($"{Path.GetFileName(executable)} a échoué ({process.ExitCode}) : {await error}");

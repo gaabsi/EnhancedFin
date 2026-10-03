@@ -5,20 +5,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Configuration
     /// <summary>
     /// Réglages du plugin, dans
     /// `<config>/plugins/configurations/Jellyfin.Plugin.EnhancedFin.xml`.
-    ///
-    /// Trois services externes (TMDB, MDBList, Seerr), tous lus : `MediaCacheHours` et `LegacyDbPath` ont été
-    /// retirés parce qu'aucune ligne de code ne les consultait — la documentation
-    /// promettait un comportement que rien n'implémentait.
-    ///
-    /// - `MediaCacheHours` décrivait un TTL de rafraîchissement. `RefreshTask` ne
-    ///   raisonne pas en durée mais en complétude (`backdrop_url IS NULL OR year IS
-    ///   NULL`) : le câbler aurait été ajouter une fonctionnalité, pas corriger un bug.
-    /// - `LegacyDbPath` servait à attacher l'ancienne base pour ses alias source externe.
-    ///   C'est du ressort de un autre plugin, et la table `media_alias` qui l'accompagnait a
-    ///   été retirée du schéma.
-    ///
-    /// Les rétablir un jour ne coûte rien ; les laisser mentir coûtait à chaque
-    /// lecture.
     /// </summary>
     public class PluginConfiguration : BasePluginConfiguration
     {
@@ -38,5 +24,19 @@ namespace Jellyfin.Plugin.EnhancedFin.Configuration
         public string SeerrUrl { get; set; } = "";
 
         public string SeerrApiKey { get; set; } = "";
+
+        /// <summary>
+        /// Convertit les sous-titres ASS intégrés en `.srt` externes et les retire des mkv
+        /// (`AssSubtitlesTask`). **Désactivé par défaut** : la tâche réécrit les fichiers
+        /// de la bibliothèque, ce qu'un admin doit choisir en connaissance de cause.
+        /// </summary>
+        public bool ConvertAssSubtitles { get; set; }
+
+        /// <summary>
+        /// Garde l'original de chaque mkv converti, en fichier caché à côté du film
+        /// (`.nom.mkv.ass-backup`, ignoré par Jellyfin). À désactiver une fois le résultat
+        /// vérifié : chaque sauvegarde double la place du film.
+        /// </summary>
+        public bool KeepAssBackup { get; set; } = true;
     }
 }
