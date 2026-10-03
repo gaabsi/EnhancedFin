@@ -12,6 +12,10 @@
     <!-- On démarre propre, autant le rester : un warning ignoré aujourd'hui
          est une dette demain. À repasser à false si ça devient bloquant. -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Build reproductible : les chemins de source gravés dans le DLL et le PDB (piles
+         d'appels, Source Link) deviennent `/_/…`. Sans ça, le binaire publié porte le
+         chemin de la machine qui l'a compilé. -->
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
   <ItemGroup>

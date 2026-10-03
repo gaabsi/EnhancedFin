@@ -13,6 +13,28 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.EnhancedFin.Services
 {
+    /// <summary>
+    /// Fabrique des `HttpClient` sortants (TMDB, MDBList, Seerr), statiques et partagés.
+    ///
+    /// Un client statique évite d'épuiser les sockets, mais garde ses connexions
+    /// **indéfiniment** : un changement d'IP (Seerr déplacé, DNS de TMDB) ne serait
+    /// jamais vu. `PooledConnectionLifetime` les renouvelle toutes les cinq minutes —
+    /// l'alternative recommandée à `IHttpClientFactory` pour des clients statiques.
+    /// </summary>
+    internal static class OutboundHttp
+    {
+        public static HttpClient client(TimeSpan timeout, long max_response_bytes = int.MaxValue) =>
+            new(new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                AutomaticDecompression = DecompressionMethods.All,
+            })
+            {
+                Timeout = timeout,
+                MaxResponseContentBufferSize = max_response_bytes,
+            };
+    }
+
     public record TmdbGenre(
         [property: JsonPropertyName("id")] int Id,
         [property: JsonPropertyName("name")] string? Name = null);
@@ -241,12 +263,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// </summary>
         private const long MaxResponseBytes = 8L * 1024 * 1024;
 
-        private static readonly HttpClient _client = new(
-            new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All })
-        {
-            Timeout = TimeSpan.FromSeconds(10),
-            MaxResponseContentBufferSize = MaxResponseBytes,
-        };
+        private static readonly HttpClient _client = OutboundHttp.client(TimeSpan.FromSeconds(10), MaxResponseBytes);
 
         // Recherches uniquement, TTL court : le catalogue TMDB bouge peu mais les
         // requêtes sont nombreuses et éphémères.

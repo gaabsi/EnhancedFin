@@ -69,10 +69,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         private static readonly TimeSpan _users_ttl = TimeSpan.FromMinutes(10);
 
         /// <summary>Pendant l'ouverture d'une fiche : mieux vaut rien qu'une attente.</summary>
-        private static readonly HttpClient _read_client = new() { Timeout = TimeSpan.FromSeconds(3) };
+        private static readonly HttpClient _read_client = OutboundHttp.client(TimeSpan.FromSeconds(3));
 
         /// <summary>Une demande, elle, est un geste explicite : on peut attendre Seerr.</summary>
-        private static readonly HttpClient _write_client = new() { Timeout = TimeSpan.FromSeconds(15) };
+        private static readonly HttpClient _write_client = OutboundHttp.client(TimeSpan.FromSeconds(15));
 
         private static readonly MemoryCache _cache = new(new MemoryCacheOptions { SizeLimit = 2000 });
 

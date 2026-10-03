@@ -45,11 +45,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// Court à dessein : l'appel se fait pendant l'ouverture d'une fiche. Au-delà,
         /// mieux vaut une fiche sans notes qu'une fiche qui attend.
         /// </summary>
-        private static readonly HttpClient _client = new(
-            new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All })
-        {
-            Timeout = TimeSpan.FromSeconds(3),
-        };
+        private static readonly HttpClient _client = OutboundHttp.client(TimeSpan.FromSeconds(3));
 
         private readonly Db _db;
         private readonly ILogger<MdblistClient> _logger;
