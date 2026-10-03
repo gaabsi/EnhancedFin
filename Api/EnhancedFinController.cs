@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -8,6 +9,7 @@ using Jellyfin.Plugin.EnhancedFin.Data;
 using Jellyfin.Plugin.EnhancedFin.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.Data.Sqlite;
 
 namespace Jellyfin.Plugin.EnhancedFin.Api
@@ -25,6 +27,46 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     /// existant ainsi que le client Swift, sans aucune erreur de compilation.
     /// </summary>
     public record ListResponse<T>(IReadOnlyList<T> items, int total);
+
+    /// <summary>
+    /// Budget de requêtes par utilisateur et par minute, sur un compartiment nommé.
+    ///
+    /// Posé sur le controller de base (`all`, tout le plugin) et sur les routes qui
+    /// appellent TMDB, MDBList ou Seerr, ou qui parcourent la bibliothèque (`outbound`).
+    /// Sans lui, un compte qui boucle sur des identifiants épuise les quotas des clés
+    /// d'API, **partagées** par tout le serveur, ou occupe le processeur du serveur.
+    ///
+    /// Fenêtre fixe d'une minute, en mémoire : simple, suffisant pour un serveur
+    /// familial, remis à zéro au redémarrage.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = true)]
+    public sealed class RateLimitAttribute : ActionFilterAttribute
+    {
+        private static readonly ConcurrentDictionary<string, (long Minute, int Count)> Windows = new();
+
+        private readonly string _bucket;
+        private readonly int _per_minute;
+
+        public RateLimitAttribute(string bucket, int per_minute)
+        {
+            _bucket = bucket;
+            _per_minute = per_minute;
+        }
+
+        public override void OnActionExecuting(ActionExecutingContext context)
+        {
+            var user = context.HttpContext.User.FindFirst("Jellyfin-UserId")?.Value;
+            if (user is null || context.Controller is not EnhancedFinController controller) return;
+
+            var minute = Environment.TickCount64 / 60_000;
+            var window = Windows.AddOrUpdate(
+                _bucket + "|" + user,
+                _ => (minute, 1),
+                (_, current) => current.Minute == minute ? (minute, current.Count + 1) : (minute, 1));
+
+            if (window.Count > _per_minute) context.Result = controller.too_many_requests();
+        }
+    }
 
     /// <summary>
     /// Base commune à tous les controllers du plugin : authentification, identité
@@ -47,6 +89,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     // configure lui-même. La compilation ne dit rien de tout ça : seul un appel sur un
     // vrai serveur révèle l'erreur.
     [Authorize]
+    [RateLimit("all", 300)]
     [Route("api/EnhancedFin/v1")]
     [Produces(MediaTypeNames.Application.Json)]
     public abstract class EnhancedFinController : ControllerBase
@@ -99,6 +142,22 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         protected static readonly string SqlIsWatched =
             "(p.duration_ticks <= 0 OR p.position_ticks >= p.duration_ticks * "
             + FinishedRatio.ToString(CultureInfo.InvariantCulture) + ")";
+
+        /// <summary>
+        /// Vrai si l'appelant (`$u`) a un lien avec le média `m` : noté, en watchlist,
+        /// suivi, masqué ou lu.
+        ///
+        /// ⚠️ La table `media` est **partagée** : elle se remplit des actions de tous les
+        /// utilisateurs. Tout ce qui la parcourt ou en dévoile la présence (recherche
+        /// locale, `known`, `GET media`) doit passer par ce filtre, sinon un compte
+        /// découvre ce que les autres ont noté ou masqué.
+        /// </summary>
+        protected const string SqlIsMine = @"(
+            EXISTS (SELECT 1 FROM rating      WHERE user_id = $u AND media_key = m.media_key)
+            OR EXISTS (SELECT 1 FROM watchlist   WHERE user_id = $u AND media_key = m.media_key)
+            OR EXISTS (SELECT 1 FROM follow      WHERE user_id = $u AND media_key = m.media_key)
+            OR EXISTS (SELECT 1 FROM hidden_item WHERE user_id = $u AND media_key = m.media_key)
+            OR EXISTS (SELECT 1 FROM playback    WHERE user_id = $u AND media_key = m.media_key))";
 
         /// <summary>
         /// Identité de l'appelant, dérivée du token — jamais d'un paramètre de requête.
@@ -181,6 +240,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// existant fonctionne sans modification. Ces deux champs seront retirables
         /// une fois le JS migré, sans impact sur les clients Swift.
         /// </summary>
+        /// <summary>Réponse d'un budget `RateLimit` dépassé.</summary>
+        internal ObjectResult too_many_requests() =>
+            problem(429, "Trop de requêtes", "Réessayez dans une minute.");
+
         protected ObjectResult problem(int status, string title, string detail)
         {
             var pd = new ProblemDetails
@@ -240,6 +303,36 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             return await catalog.ensure_exists(media_key)
                 ? null
                 : problem(404, "Média inconnu", $"'{truncate(media_key)}' est introuvable sur TMDB.");
+        }
+
+        /// <summary>
+        /// Retire la ligne de l'appelant pour un média, dans une de ses tables
+        /// (note, watchlist, suivi, masquage) : 204, ou 404 s'il n'y avait rien.
+        ///
+        /// Parametres :
+        /// - db (Db) : base du plugin
+        /// - table (string) : table visée — une constante du code, jamais une valeur reçue
+        /// - media_key (string) : clé du média
+        /// - not_found_title (string) : titre du 404
+        /// - not_found_detail (string) : détail du 404
+        ///
+        /// Output :
+        /// - result (ActionResult) : 204, 400, 401 ou 404
+        /// </summary>
+        protected ActionResult delete_for_media(
+            Db db, string table, string media_key, string not_found_title, string not_found_detail)
+        {
+            var user_id = current_user_id();
+            if (user_id is null) return not_authenticated();
+            if (!is_valid_media_key(media_key)) return invalid_media_key(media_key);
+
+            using var con = db.open();
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = $"DELETE FROM {table} WHERE user_id = $u AND media_key = $k";
+            cmd.Parameters.AddWithValue("$u", user_id);
+            cmd.Parameters.AddWithValue("$k", media_key);
+
+            return cmd.ExecuteNonQuery() == 0 ? problem(404, not_found_title, not_found_detail) : NoContent();
         }
 
         /// <summary>
@@ -322,8 +415,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// savoir, pour chacun, s'il est noté ou en watchlist. Une sous-requête par
         /// ligne ferait autant d'allers-retours SQLite que d'items.
         ///
-        /// Le `LEFT JOIN` part de `media` : une clé absente du référentiel n'a par
-        /// construction ni note ni watchlist, et ne figure simplement pas au résultat.
+        /// Une clé absente du référentiel, ou présente sans lien avec l'appelant
+        /// (`SqlIsMine`), ne figure pas au résultat : `known` ne dit que « à moi ».
         ///
         /// Parametres :
         /// - con (SqliteConnection) : connexion ouverte
@@ -355,7 +448,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                        (SELECT 1     FROM watchlist WHERE user_id = $u AND media_key = m.media_key),
                        (SELECT 1     FROM follow    WHERE user_id = $u AND media_key = m.media_key)
                 FROM media m
-                WHERE m.media_key IN ({placeholders})";
+                WHERE m.media_key IN ({placeholders}) AND {SqlIsMine}";
             cmd.Parameters.AddWithValue("$u", user_id);
             for (var i = 0; i < keys.Count; i++)
                 cmd.Parameters.AddWithValue($"$k{i}", keys[i]);

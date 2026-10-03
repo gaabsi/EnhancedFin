@@ -629,7 +629,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
             {
-                _logger.LogError(ex, "[EnhancedFin] TMDB {Path} a échoué", path);
+                _logger.LogError("[EnhancedFin] TMDB {Path} a échoué : {Message}", path, ex.Message);
                 return null;
             }
         }

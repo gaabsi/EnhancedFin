@@ -37,6 +37,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         // Le statut Seerr et, pour une série, celui de chaque saison : de quoi griser dans
         // la fenêtre de demande ce qui est déjà disponible ou en attente.
         [HttpGet("seerr/{mediaKey}")]
+        [RateLimit("outbound", 60)]
         public async Task<ActionResult> status(string mediaKey)
         {
             if (current_user() is null) return not_authenticated();
@@ -62,6 +63,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         // POST /api/EnhancedFin/v1/me/requests/{mediaKey}
         // Crée la demande **au nom de l'utilisateur du jeton**, avec ses droits Seerr.
         [HttpPost("me/requests/{mediaKey}")]
+        [RateLimit("outbound", 60)]
         public async Task<ActionResult> request(string mediaKey, [FromBody] SeerrRequestBody? body)
         {
             if (current_user() is not { } user) return not_authenticated();

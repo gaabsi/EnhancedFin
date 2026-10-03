@@ -174,6 +174,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         // GET /api/EnhancedFin/v1/me/ratings/pending
         // Vu mais pas encore noté. Remplace l'ancien `ToRate`.
         [HttpGet("me/ratings/pending")]
+        [RateLimit("outbound", 60)]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         public ActionResult<ListResponse<PendingRatingItem>> pending(
@@ -447,6 +448,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         // PUT /api/EnhancedFin/v1/me/ratings/{mediaKey}
         // Idempotent : rejouer l'appel ne crée pas de doublon (upsert sur la PK).
         [HttpPut("me/ratings/{mediaKey}")]
+        [RateLimit("outbound", 60)]
         [ProducesResponseType(StatusCodes.Status204NoContent)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -484,18 +486,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         [ProducesResponseType(StatusCodes.Status404NotFound)]
         public ActionResult remove(string mediaKey)
         {
-            var user_id = current_user_id();
-            if (user_id is null) return not_authenticated();
-
-            using var con = _db.open();
-            using var cmd = con.CreateCommand();
-            cmd.CommandText = "DELETE FROM rating WHERE user_id = $u AND media_key = $k";
-            cmd.Parameters.AddWithValue("$u", user_id);
-            cmd.Parameters.AddWithValue("$k", mediaKey);
-
-            return cmd.ExecuteNonQuery() == 0
-                ? problem(404, "Note introuvable", $"Aucune note sur '{mediaKey}'.")
-                : NoContent();
+            return delete_for_media(_db, "rating", mediaKey, "Note introuvable", $"Aucune note sur '{mediaKey}'.");
         }
 
     }

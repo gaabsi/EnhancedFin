@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Jellyfin.Plugin.EnhancedFin.Data;
 using Jellyfin.Plugin.EnhancedFin.Services;
 using System.Threading.Tasks;
@@ -30,6 +31,16 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     /// </summary>
     public class PlaybackController : EnhancedFinController
     {
+        /// <summary>
+        /// Bornes larges (les plus longues séries dépassent à peine 50 saisons, un anime
+        /// quelques milliers d'épisodes) : elles empêchent seulement de remplir la base
+        /// de lignes absurdes.
+        /// </summary>
+        private const int MaxSeason = 1000;
+        private const int MaxEpisode = 10000;
+
+        private static readonly Regex LanguageCode = new("^[a-z]{2,3}(-[a-z0-9]{2,8})?$", RegexOptions.Compiled);
+
         private readonly Db _db;
         private readonly MediaCatalog _catalog;
 
@@ -167,6 +178,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
         // PUT /api/EnhancedFin/v1/me/progress/{mediaKey}
         [HttpPut("me/progress/{mediaKey}")]
+        [RateLimit("outbound", 60)]
         public async Task<ActionResult> upsert_progress(string mediaKey, [FromBody] ProgressRequest body)
         {
             var user_id = current_user_id();
@@ -176,10 +188,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             // Le corps est validé **avant** `ensure_media`, qui fait un appel réseau
             // vers TMDB puis une écriture : un corps invalide ne doit rien coûter au
             // serveur. C'est l'ordre que suit déjà RatingsController.
-            if (body.Season < 0 || body.Episode < 0)
-                return problem(400, "Position invalide", "season et episode doivent être positifs.");
+            if (body.Season is < 0 or > MaxSeason || body.Episode is < 0 or > MaxEpisode)
+                return problem(400, "Position invalide", $"season entre 0 et {MaxSeason}, episode entre 0 et {MaxEpisode}.");
             if (body.PositionTicks < 0 || body.DurationTicks < 0)
                 return problem(400, "Durée invalide", "les ticks doivent être positifs.");
+            if (body.Lang is { } lang && !LanguageCode.IsMatch(lang))
+                return problem(400, "Langue invalide", "lang doit être un code de langue (« fr », « pt-br »).");
 
             if (await ensure_media(_catalog, mediaKey) is { } error) return error;
 
@@ -222,6 +236,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         // appel. `PUT /me/progress` ne convient pas ici — un épisode à la fois, et il ne
         // sait pas démarquer.
         [HttpPut("me/watched/{mediaKey}")]
+        [RateLimit("outbound", 60)]
         public async Task<ActionResult> mark_watched(string mediaKey, [FromBody] WatchedRequest body)
         {
             var user_id = current_user_id();
@@ -277,12 +292,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// </summary>
         private ObjectResult? invalid_watched(WatchedRequest body)
         {
-            if (body.Season < 0 || body.Episodes is not { Count: > 0 })
-                return problem(400, "Corps invalide", "season ≥ 0 et au moins un épisode attendus.");
+            if (body.Season is < 0 or > MaxSeason || body.Episodes is not { Count: > 0 })
+                return problem(400, "Corps invalide", $"season entre 0 et {MaxSeason}, et au moins un épisode attendus.");
             // Borne large (une saison dépasse rarement 30 épisodes, un long anime 200) :
             // elle empêche seulement une transaction démesurée.
-            if (body.Episodes.Count > 500 || body.Episodes.Exists(e => e < 0))
-                return problem(400, "Épisodes invalides", "entre 1 et 500 numéros positifs.");
+            if (body.Episodes.Count > 500 || body.Episodes.Exists(e => e is < 0 or > MaxEpisode))
+                return problem(400, "Épisodes invalides", $"entre 1 et 500 numéros, de 0 à {MaxEpisode}.");
             return null;
         }
 
@@ -372,6 +387,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
         // PUT /api/EnhancedFin/v1/me/hidden/{mediaKey}
         [HttpPut("me/hidden/{mediaKey}")]
+        [RateLimit("outbound", 60)]
         public async Task<ActionResult> hide(string mediaKey)
         {
             var user_id = current_user_id();
@@ -394,18 +410,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         [HttpDelete("me/hidden/{mediaKey}")]
         public ActionResult unhide(string mediaKey)
         {
-            var user_id = current_user_id();
-            if (user_id is null) return not_authenticated();
-
-            using var con = _db.open();
-            using var cmd = con.CreateCommand();
-            cmd.CommandText = "DELETE FROM hidden_item WHERE user_id = $u AND media_key = $k";
-            cmd.Parameters.AddWithValue("$u", user_id);
-            cmd.Parameters.AddWithValue("$k", mediaKey);
-
-            return cmd.ExecuteNonQuery() == 0
-                ? problem(404, "Non masqué", $"'{mediaKey}' n'était pas masqué.")
-                : NoContent();
+            return delete_for_media(_db, "hidden_item", mediaKey, "Non masqué", $"'{mediaKey}' n'était pas masqué.");
         }
     }
 }

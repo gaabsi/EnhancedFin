@@ -109,7 +109,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             var parts = (media_key ?? "").Split(':', 2);
             if (parts.Length != 2) return null;
             if (parts[0] != "movie" && parts[0] != "tv") return null;
-            if (!int.TryParse(parts[1], out var id) || id <= 0) return null;
+            // Forme canonique seulement : « 550 », jamais « +550 », « 0550 » ni « 550 ».
+            // La clé brute est stockée telle quelle ; une variante passerait la contrainte
+            // `UNIQUE(media_type, tmdb_id)` mais pas `ON CONFLICT(media_key)`, et ferait
+            // échouer toutes les écritures sur le vrai média, pour tous les utilisateurs.
+            if (!int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var id)
+                || id <= 0
+                || parts[1] != id.ToString(CultureInfo.InvariantCulture)) return null;
 
             return (parts[0], id);
         }

@@ -46,6 +46,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
         // POST /api/EnhancedFin/v1/syncplay/invite — corps { groupId, userId }
         [HttpPost("syncplay/invite")]
+        // Au plus 5 invitations par minute et par expéditeur, toutes cibles confondues :
+        // le délai par cible ne suffit pas à empêcher d'inviter tout le serveur en boucle.
+        [RateLimit("syncplay-invite", 5)]
         public async Task<ActionResult> invite([FromBody] SyncPlayInviteRequest body, CancellationToken ct)
         {
             var me = current_user();

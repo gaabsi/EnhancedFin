@@ -133,6 +133,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
         // PUT /api/EnhancedFin/v1/me/follows/{mediaKey}
         [HttpPut("me/follows/{mediaKey}")]
+        [RateLimit("outbound", 60)]
         public async Task<ActionResult> follow(string mediaKey)
         {
             var user_id = current_user_id();
@@ -140,6 +141,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
             if (await ensure_media(_catalog, mediaKey) is { } error) return error;
 
+            var is_new = !is_following(user_id, mediaKey);
             var written = write_for_media(_db, @"
                 INSERT INTO follow (user_id, media_key, added_at) VALUES ($u, $k, $now)
                 ON CONFLICT(user_id, media_key) DO NOTHING",
@@ -164,11 +166,23 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             //
             // Coût : un appel TMDB par saison, soit quelques secondes sur une longue
             // série. Le client pose son état de façon optimiste, l'attente ne se voit
-            // donc pas à l'écran.
-            if (written is NoContentResult)
+            // donc pas à l'écran. Seulement pour un **nouveau** suivi : répéter le `PUT`
+            // ne doit pas relancer ces appels.
+            if (is_new && written is NoContentResult)
                 await refresh_releases_quietly(mediaKey);
 
             return written;
+        }
+
+        /// <summary>Vrai si l'appelant suit déjà ce média.</summary>
+        private bool is_following(string user_id, string media_key)
+        {
+            using var con = _db.open();
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = "SELECT 1 FROM follow WHERE user_id = $u AND media_key = $k";
+            cmd.Parameters.AddWithValue("$u", user_id);
+            cmd.Parameters.AddWithValue("$k", media_key);
+            return cmd.ExecuteScalar() is not null;
         }
 
         /// <summary>
@@ -198,18 +212,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         [HttpDelete("me/follows/{mediaKey}")]
         public ActionResult unfollow(string mediaKey)
         {
-            var user_id = current_user_id();
-            if (user_id is null) return not_authenticated();
-
-            using var con = _db.open();
-            using var cmd = con.CreateCommand();
-            cmd.CommandText = "DELETE FROM follow WHERE user_id = $u AND media_key = $k";
-            cmd.Parameters.AddWithValue("$u", user_id);
-            cmd.Parameters.AddWithValue("$k", mediaKey);
-
-            return cmd.ExecuteNonQuery() == 0
-                ? problem(404, "Non suivi", $"'{mediaKey}' n'était pas suivi.")
-                : NoContent();
+            return delete_for_media(_db, "follow", mediaKey, "Non suivi", $"'{mediaKey}' n'était pas suivi.");
         }
 
         // GET /api/EnhancedFin/v1/me/calendar?from=2026-09-01&to=2026-09-30

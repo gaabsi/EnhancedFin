@@ -109,6 +109,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
         // GET /api/EnhancedFin/v1/person/{tmdbId}
         [HttpGet("person/{tmdbId:int}")]
+        [RateLimit("outbound", 60)]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
