@@ -77,7 +77,7 @@ These keys are secrets: the XML file is git-ignored, keep it that way.
 ## API
 
 Base path: `/api/EnhancedFin/v1`. Every route requires a Jellyfin user token
-(`X-Emby-Token` header or `Authorization: MediaBrowser Token="…"`).
+(`Authorization: MediaBrowser Token="…"` header; Jellyfin 12 rejects the legacy `X-Emby-Token`).
 
 **The caller's identity always comes from the token** — no route takes a `userId`,
 and everything personal lives under `/me`. API keys are rejected, since they don't

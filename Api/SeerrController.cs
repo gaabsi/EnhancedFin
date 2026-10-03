@@ -16,10 +16,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     /// Demandes Seerr : le statut d'un média (et de ses saisons), et la création d'une
     /// demande.
     ///
-    /// Repris de plugin précédent (`SeerrController.seerr_request`), avec une différence qui
-    /// compte : l'utilisateur vient **du jeton**, jamais du corps. L'ancienne route lisait
-    /// `JellyfinUserId` dans le JSON — n'importe quel compte pouvait demander au nom d'un
-    /// autre, et consommer ses quotas.
+    /// L'utilisateur vient **du jeton**, jamais du corps : lu dans le JSON, n'importe quel
+    /// compte pourrait demander au nom d'un autre, et consommer ses quotas Seerr.
     /// </summary>
     public class SeerrController : EnhancedFinController
     {

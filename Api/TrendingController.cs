@@ -57,14 +57,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// classement n'en contiennent qu'une dizaine. L'appel rend donc moins que
         /// <see cref="TargetItems"/> et laisse le curseur avancer de cinq d'un coup.
         /// C'est assumé — le rail se complète au défilement, et la borne protège le
-        /// Pi d'une rafale d'appels sortants.
+        /// serveur d'une rafale d'appels sortants.
         /// </summary>
         private const int MaxPagesPerCall = 5;
 
         /// <summary>
         /// Dernière page du classement hebdomadaire que l'on accepte de demander.
-        /// Reprise du plafond de l'ancien plugin : au-delà, ce ne sont plus des
-        /// tendances.
+        /// Au-delà, ce ne sont plus des tendances.
         /// </summary>
         private const int LastPage = 30;
 

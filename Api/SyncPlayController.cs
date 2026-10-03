@@ -25,8 +25,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     {
         /// <summary>
         /// Délai minimal entre deux invitations d'un même expéditeur à une même personne :
-        /// l'invitation s'affiche aussi en message sur la webapp et les TV (faille n°8 de
-        /// l'ancien plugin : spam).
+        /// l'invitation s'affiche aussi en message sur la webapp et les TV, un envoi en
+        /// boucle y serait du spam.
         /// </summary>
         private static readonly TimeSpan InviteCooldown = TimeSpan.FromSeconds(10);
 
@@ -64,8 +64,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 return problem(404, "Utilisateur introuvable", "Aucun utilisateur ne porte cet identifiant.");
 
             // L'expéditeur doit être dans le groupe : on ne peut pas inviter chez les autres,
-            // ni au nom d'un autre (faille n°8 de l'ancien plugin, qui lisait l'expéditeur
-            // dans le corps).
+            // ni au nom d'un autre (l'expéditeur vient du jeton, jamais du corps).
             var my_session = _sessions.Sessions.FirstOrDefault(s => s.UserId == me);
             var group = my_session is null ? null : _syncplay.GetGroup(my_session, body.groupId);
             var sender = _users.GetUserById(me.Value);
@@ -84,7 +83,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 ControllingUserId = me.Value,
             };
             command.Arguments["Header"] = "SyncPlay";
-            command.Arguments["Text"] = $"{sender.Username} t'invite à regarder ensemble";
+            // Texte affiché tel quel par les clients qui ne connaissent pas nos arguments
+            // (webapp, TV) ; SweetFin compose le sien, traduit, à partir de `SyncPlayFrom`.
+            command.Arguments["Text"] = $"{sender.Username} invites you to watch together";
             command.Arguments["TimeoutMs"] = "15000";
             command.Arguments["SyncPlayGroupId"] = body.groupId.ToString("N");
             command.Arguments["SyncPlayFrom"] = sender.Username;

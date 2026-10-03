@@ -156,13 +156,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             var genres = new Dictionary<string, List<int>>(StringComparer.Ordinal);
             if (media_keys.Count == 0) return genres;
 
-            var placeholders = string.Join(",", media_keys.Select((_, i) => $"$k{i}"));
-
             using var cmd = con.CreateCommand();
             cmd.CommandText =
-                $"SELECT media_key, genre_id FROM media_genre WHERE media_key IN ({placeholders}) ORDER BY genre_id";
-            for (var i = 0; i < media_keys.Count; i++)
-                cmd.Parameters.AddWithValue($"$k{i}", media_keys[i]);
+                $"SELECT media_key, genre_id FROM media_genre WHERE media_key IN ({bind_keys(cmd, media_keys)}) ORDER BY genre_id";
 
             using var rd = cmd.ExecuteReader();
             while (rd.Read())

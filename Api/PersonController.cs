@@ -193,7 +193,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             var in_library = Guid.TryParse(user_id, out var guid)
                 ? _library.index(guid)
                 : new Dictionary<string, LibraryMatch>();
-            var my_ratings = read_my_ratings(user_id, retained.Select(c => $"{c.MediaType}:{c.Id}"));
+            // L'état complet (`read_my_state`) dont on ne garde que la note.
+            Dictionary<string, int> my_ratings;
+            using (var con = _db.open())
+            {
+                my_ratings = read_my_state(con, user_id, retained.Select(c => $"{c.MediaType}:{c.Id}"))
+                    .Where(state => state.Value.Rating is not null)
+                    .ToDictionary(state => state.Key, state => state.Value.Rating!.Value, StringComparer.Ordinal);
+            }
 
             var credits = retained.ConvertAll(c =>
             {
@@ -247,53 +254,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             if (SelfRole.IsMatch(role)) return false;
 
             return !NonRoleMarkers.Any(m => role.Contains(m, StringComparison.OrdinalIgnoreCase));
-        }
-
-        /// <summary>
-        /// Notes de l'appelant pour un lot de médias, en une requête.
-        ///
-        /// Parametres :
-        /// - user_id (string) : identité de l'appelant
-        /// - media_keys (IEnumerable&lt;string&gt;) : clés à interroger
-        ///
-        /// Output :
-        /// - ratings (Dictionary) : clé -&gt; note ; une clé non notée est simplement
-        ///   absente, et `TryGetValue` rend alors le défaut
-        /// </summary>
-        /// <remarks>
-        /// Une requête plate plutôt qu'une table fabriquée à coups de `UNION ALL`.
-        /// L'ancienne forme produisait un SELECT composé d'autant de branches que de
-        /// clés : elle ne tenait que parce que `MaxCredits` vaut 60, contre une
-        /// limite SQLite de 500 branches (`SQLITE_MAX_COMPOUND_SELECT`). Une
-        /// constante posée pour des raisons d'affichage gardait donc une requête du
-        /// côté légal — la porter à 500 aurait fait tomber la route, pas ralenti
-        /// l'affichage. Avec `IN (...)`, la seule borne est celle des paramètres
-        /// liés (32 766).
-        ///
-        /// Les clés viennent de TMDB, pas de l'appelant, mais elles restent liées :
-        /// une requête paramétrée ne se contourne pas.
-        /// </remarks>
-        private Dictionary<string, int> read_my_ratings(
-            string user_id, IEnumerable<string> media_keys)
-        {
-            var keys = media_keys.ToList();
-            var ratings = new Dictionary<string, int>(StringComparer.Ordinal);
-            if (keys.Count == 0) return ratings;
-
-            var placeholders = string.Join(",", keys.Select((_, i) => $"$k{i}"));
-
-            using var con = _db.open();
-            using var cmd = con.CreateCommand();
-            cmd.CommandText =
-                $"SELECT media_key, score FROM rating WHERE user_id = $u AND media_key IN ({placeholders})";
-            cmd.Parameters.AddWithValue("$u", user_id);
-            for (var i = 0; i < keys.Count; i++)
-                cmd.Parameters.AddWithValue($"$k{i}", keys[i]);
-
-            using var rd = cmd.ExecuteReader();
-            while (rd.Read()) ratings[rd.GetString(0)] = rd.GetInt32(1);
-
-            return ratings;
         }
     }
 }
