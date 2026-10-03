@@ -94,7 +94,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 ORDER BY f.added_at DESC
                 LIMIT $limit OFFSET $offset";
             cmd.Parameters.AddWithValue("$u", user_id);
-            cmd.Parameters.AddWithValue("$today", DateTime.UtcNow.ToString("yyyy-MM-dd"));
+            // Date du serveur, pas UTC : les dates TMDB sont des jours sans fuseau, et le soir
+            // en Europe UTC est déjà « demain ».
+            cmd.Parameters.AddWithValue("$today", DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
             cmd.Parameters.AddWithValue("$limit", page.Limit);
             cmd.Parameters.AddWithValue("$offset", page.Offset);
 
@@ -225,9 +227,16 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
             var user_id = user.Value.ToString("D");
 
-            // Par défaut : la quinzaine en cours, la fenêtre qu'affiche le front actuel.
-            var start = parse_date(from) ?? DateTime.UtcNow.Date;
-            var end = parse_date(to) ?? start.AddDays(14);
+            // Une date fournie mais illisible est une erreur : la remplacer en silence
+            // renverrait une autre période que celle demandée.
+            var parsed_from = parse_date(from);
+            var parsed_to = parse_date(to);
+            if ((from is not null && parsed_from is null) || (to is not null && parsed_to is null))
+                return problem(400, "Date invalide", "from et to sont au format 'yyyy-MM-dd'.");
+
+            // Par défaut : la quinzaine en cours, à partir d'aujourd'hui (date du serveur).
+            var start = parsed_from ?? DateTime.Now.Date;
+            var end = parsed_to ?? start.AddDays(14);
 
             if (end < start)
                 return problem(400, "Plage invalide", "'to' doit être postérieur à 'from'.");
@@ -249,8 +258,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                   AND r.air_date >= $from AND r.air_date <= $to
                 ORDER BY r.air_date, m.title, r.season, r.episode";
             cmd.Parameters.AddWithValue("$u", user_id);
-            cmd.Parameters.AddWithValue("$from", start.ToString("yyyy-MM-dd"));
-            cmd.Parameters.AddWithValue("$to", end.ToString("yyyy-MM-dd"));
+            cmd.Parameters.AddWithValue("$from", start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+            cmd.Parameters.AddWithValue("$to", end.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
 
             // Index résolu une fois pour toute la réponse : une résolution par ligne
             // ferait une requête bibliothèque par sortie. Il porte l'utilisateur, donc
@@ -290,8 +299,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 .ToList();
 
             return Ok(new CalendarResponse(
-                from: start.ToString("yyyy-MM-dd"),
-                to: end.ToString("yyyy-MM-dd"),
+                from: start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                to: end.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 days: days));
         }
 

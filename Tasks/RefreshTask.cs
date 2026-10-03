@@ -92,7 +92,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
                 // `force` est indispensable : sans lui, ensure_exists sort dès que le
                 // média existe et cette boucle ne fait rien. C'est l'UPSERT qui
                 // complète la fiche (année, images, synopsis).
-                await _catalog.ensure_exists(media_key, force: true);
+                await _catalog.ensure_exists(media_key, force: true, cancellation);
                 progress.Report(100.0 * ++done / total);
             }
 
@@ -100,7 +100,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
             {
                 cancellation.ThrowIfCancellationRequested();
 
-                var count = await _catalog.refresh_releases(media_key);
+                var count = await _catalog.refresh_releases(media_key, cancellation);
                 if (count > 0)
                     _logger.LogDebug("[EnhancedFin] {Key} : {Count} épisodes", media_key, count);
 
@@ -195,7 +195,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Tasks
                 LIMIT $limit";
             cmd.Parameters.AddWithValue(
                 "$cutoff", DateTime.UtcNow.AddDays(-1).ToString("o", CultureInfo.InvariantCulture));
-            cmd.Parameters.AddWithValue("$today", DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+            cmd.Parameters.AddWithValue("$today", DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
             cmd.Parameters.AddWithValue("$limit", BatchSize);
 
             var keys = new List<string>();

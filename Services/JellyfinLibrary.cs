@@ -69,6 +69,15 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         // Même raisonnement que le HttpClient statique de TmdbClient.
         private static readonly ConcurrentDictionary<Guid, CachedIndex> _index = new();
 
+        /// <summary>
+        /// Médias vus, par utilisateur, gardés deux minutes : `me/ratings/pending` les
+        /// recalculait à chaque appel en interrogeant chaque série commencée. Court, pour
+        /// qu'un film tout juste vu entre vite dans « à noter ».
+        /// </summary>
+        private static readonly TimeSpan WatchedTtl = TimeSpan.FromMinutes(2);
+
+        private static readonly ConcurrentDictionary<Guid, (IReadOnlyDictionary<string, WatchedMedia> Entries, DateTime BuiltAt)> _watched = new();
+
         // Un verrou **par utilisateur** : la construction parcourt toute la
         // bibliothèque, et l'app iOS déclenche trois appels de liste en parallèle au
         // chargement de l'Explorer. Sans lui, les trois reconstruisaient le même index
@@ -313,11 +322,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// - user_id (Guid) : utilisateur dont on applique les droits
         ///
         /// Output :
-        /// - watched (Dictionary&lt;string, WatchedMedia&gt;) : media_key -&gt; média vu,
-        ///   vide si la bibliothèque répond mal
+        /// - watched (IReadOnlyDictionary&lt;string, WatchedMedia&gt;) : media_key -&gt; média
+        ///   vu, vide si la bibliothèque répond mal ; partagé par le cache, donc en lecture seule
         /// </summary>
-        public Dictionary<string, WatchedMedia> watched(Guid user_id)
+        public IReadOnlyDictionary<string, WatchedMedia> watched(Guid user_id)
         {
+            if (_watched.TryGetValue(user_id, out var cached) && DateTime.UtcNow - cached.BuiltAt < WatchedTtl)
+                return cached.Entries;
+
             var watched = new Dictionary<string, WatchedMedia>(StringComparer.Ordinal);
 
             var user = _users.GetUserById(user_id);
@@ -326,6 +338,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             collect_watched_movies(user, watched);
             collect_watched_series(user, watched);
 
+            _watched[user_id] = (watched, DateTime.UtcNow);
             return watched;
         }
 

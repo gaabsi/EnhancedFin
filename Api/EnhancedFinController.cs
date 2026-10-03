@@ -240,6 +240,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// existant fonctionne sans modification. Ces deux champs seront retirables
         /// une fois le JS migré, sans impact sur les clients Swift.
         /// </summary>
+        /// <summary>
+        /// Vrai si l'écriture a échoué parce que le média manque au référentiel : violation
+        /// de clé étrangère (code étendu 787). Le code 19 seul couvre toutes les contraintes
+        /// (`CHECK`, `NOT NULL`, `UNIQUE`), qu'il ne faut pas présenter comme « média inconnu ».
+        /// </summary>
+        protected static bool is_unknown_media(SqliteException ex) => ex.SqliteExtendedErrorCode == 787;
+
         /// <summary>Réponse d'un budget `RateLimit` dépassé.</summary>
         internal ObjectResult too_many_requests() =>
             problem(429, "Trop de requêtes", "Réessayez dans une minute.");
@@ -363,7 +370,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             {
                 cmd.ExecuteNonQuery();
             }
-            catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+            catch (SqliteException ex) when (is_unknown_media(ex))
             {
                 return problem(404, "Média inconnu",
                                $"'{truncate(media_key)}' doit d'abord être enregistré dans `media`.");
