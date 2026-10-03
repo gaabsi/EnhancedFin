@@ -21,6 +21,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
     /// jamais vu. `PooledConnectionLifetime` les renouvelle toutes les cinq minutes —
     /// l'alternative recommandée à `IHttpClientFactory` pour des clients statiques.
     /// </summary>
+    /// <summary>
+    /// Résultat d'un test de clé depuis la page de réglages : jamais la clé elle-même,
+    /// seulement si elle marche et pourquoi. camelCase : voir `ListResponse`.
+    /// </summary>
+    public record ServiceCheck(bool ok, string message);
+
     internal static class OutboundHttp
     {
         public static HttpClient client(TimeSpan timeout, long max_response_bytes = int.MaxValue) =>
@@ -628,6 +634,35 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
                 if (c > 0x2FFF) return true;
 
             return false;
+        }
+
+        /// <summary>
+        /// Teste une clé TMDB **saisie**, avant tout enregistrement (page de réglages).
+        ///
+        /// Parametres :
+        /// - key (string) : la clé à tester
+        ///
+        /// Output :
+        /// - check (ServiceCheck) : vrai si TMDB l'accepte, sinon la raison
+        /// </summary>
+        public async Task<ServiceCheck> check(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return new ServiceCheck(false, "Enter a key first.");
+
+            try
+            {
+                using var response = await _client.GetAsync($"{BaseUrl}/configuration?api_key={Uri.EscapeDataString(key.Trim())}");
+                return response.StatusCode switch
+                {
+                    HttpStatusCode.OK => new ServiceCheck(true, "TMDB accepted the key."),
+                    HttpStatusCode.Unauthorized => new ServiceCheck(false, "TMDB rejected the key (use the v3 \"API Key\", not the read access token)."),
+                    _ => new ServiceCheck(false, $"TMDB answered HTTP {(int)response.StatusCode}."),
+                };
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                return new ServiceCheck(false, $"TMDB is unreachable from the server: {ex.Message}");
+            }
         }
 
         private async Task<T?> fetch<T>(string path, string extra = "", string lang = "fr-FR")

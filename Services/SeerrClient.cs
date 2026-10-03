@@ -189,6 +189,50 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// - result ((bool ok, int status, string body)) : `status` = 0 si Seerr n'est pas
         ///   configuré ou injoignable
         /// </summary>
+        /// <summary>
+        /// Teste une URL et une clé Seerr **saisies** (page de réglages), en distinguant
+        /// « serveur injoignable » de « clé refusée ».
+        ///
+        /// Parametres :
+        /// - url (string) : adresse de Seerr, telle que le serveur Jellyfin la joint
+        /// - key (string) : la clé d'API de Seerr
+        ///
+        /// Output :
+        /// - check (ServiceCheck) : vrai si Seerr répond et accepte la clé, sinon la raison
+        /// </summary>
+        public async Task<ServiceCheck> check(string url, string key)
+        {
+            if (!Uri.TryCreate(url?.Trim(), UriKind.Absolute, out var base_uri) || base_uri.Scheme is not ("http" or "https"))
+                return new ServiceCheck(false, "Enter the Seerr URL, e.g. http://seerr:5055.");
+            if (string.IsNullOrWhiteSpace(key)) return new ServiceCheck(false, "Enter the Seerr API key.");
+
+            var root = base_uri.ToString().TrimEnd('/');
+            try
+            {
+                // 1. Le serveur répond-il ? `status` n'exige pas de clé.
+                using (var status = await _read_client.GetAsync(root + "/api/v1/status"))
+                {
+                    if (!status.IsSuccessStatusCode)
+                        return new ServiceCheck(false, $"Seerr answered HTTP {(int)status.StatusCode} at this URL.");
+                }
+
+                // 2. La clé est-elle acceptée ? Une route d'administration l'exige.
+                using var request = new HttpRequestMessage(HttpMethod.Get, root + "/api/v1/settings/main");
+                request.Headers.Add("X-Api-Key", key.Trim());
+                using var response = await _read_client.SendAsync(request);
+                return response.StatusCode switch
+                {
+                    HttpStatusCode.OK => new ServiceCheck(true, "Seerr is reachable and accepted the key."),
+                    HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => new ServiceCheck(false, "Seerr is reachable but rejected the key."),
+                    _ => new ServiceCheck(false, $"Seerr answered HTTP {(int)response.StatusCode}."),
+                };
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                return new ServiceCheck(false, $"Seerr is unreachable from the Jellyfin server: {ex.Message}");
+            }
+        }
+
         private async Task<(bool ok, int status, string body)> send(
             HttpClient client, HttpMethod method, string path, object? payload = null, int? as_user = null)
         {

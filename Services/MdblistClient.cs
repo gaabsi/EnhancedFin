@@ -66,6 +66,40 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// - scores (MdblistScores | null) : notes, null si inconnues (sans clé, en
         ///   panne, ou jamais obtenues)
         /// </summary>
+        /// <summary>
+        /// Teste une clé MDBList **saisie** (page de réglages), et donne le quota du jour.
+        ///
+        /// Parametres :
+        /// - key (string) : la clé à tester
+        ///
+        /// Output :
+        /// - check (ServiceCheck) : vrai si MDBList l'accepte, sinon la raison
+        /// </summary>
+        public async Task<ServiceCheck> check(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return new ServiceCheck(false, "Enter a key first.");
+
+            try
+            {
+                using var response = await _client.GetAsync($"{BaseUrl}/user?apikey={Uri.EscapeDataString(key.Trim())}");
+                if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                    return new ServiceCheck(false, "MDBList rejected the key.");
+                if (!response.IsSuccessStatusCode)
+                    return new ServiceCheck(false, $"MDBList answered HTTP {(int)response.StatusCode}.");
+
+                // Le quota est un bonus : une réponse d'une autre forme ne fait pas échouer le test.
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                var root = doc.RootElement;
+                return root.TryGetProperty("api_requests", out var limit) && root.TryGetProperty("api_requests_count", out var used)
+                    ? new ServiceCheck(true, $"MDBList accepted the key ({used} of {limit} requests used today).")
+                    : new ServiceCheck(true, "MDBList accepted the key.");
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+            {
+                return new ServiceCheck(false, $"MDBList is unreachable from the server: {ex.Message}");
+            }
+        }
+
         public async Task<MdblistScores?> get_scores(string media_key)
         {
             var cached = read_cache(media_key, out var fetched_at);

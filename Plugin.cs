@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using Jellyfin.Plugin.EnhancedFin.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
+using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
 
 namespace Jellyfin.Plugin.EnhancedFin
@@ -10,7 +12,7 @@ namespace Jellyfin.Plugin.EnhancedFin
     /// Point d'entrée du plugin. Ne fait QUE de l'enregistrement : toute la logique
     /// vit dans Api/ et Data/.
     /// </summary>
-    public class Plugin : BasePlugin<PluginConfiguration>
+    public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         public override string Name => "EnhancedFin";
 
@@ -29,5 +31,18 @@ namespace Jellyfin.Plugin.EnhancedFin
         {
             Instance = this;
         }
+
+        /// <summary>
+        /// Page de réglages du tableau de bord (clés, test des clés, sous-titres ASS),
+        /// intégrée au DLL : réservée aux administrateurs par Jellyfin.
+        /// </summary>
+        public IEnumerable<PluginPageInfo> GetPages() => new[]
+        {
+            new PluginPageInfo
+            {
+                Name = Name,
+                EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html",
+            },
+        };
     }
 }
