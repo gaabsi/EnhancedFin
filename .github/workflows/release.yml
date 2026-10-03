@@ -1,0 +1,80 @@
+# Publication d'une version : `git tag -a v1.2.3 -m "changelog"` puis `git push origin v1.2.3`.
+#
+# Compile en Release (version 1.2.3.0 injectée dans le DLL), publie le zip en Release
+# GitHub, puis ajoute la version en tête de `manifest.json` sur `main` : les serveurs
+# qui ont ajouté le dépôt de plugins voient la mise à jour d'eux-mêmes.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code du tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Version et changelog
+        run: |
+          echo "VERSION=${GITHUB_REF_NAME#v}.0" >> "$GITHUB_ENV"
+          # Le message du tag annoté sert de changelog.
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > changelog.txt
+
+      - name: Compilation
+        run: dotnet build -c Release -p:Version="$VERSION" -p:AssemblyVersion="$VERSION" -p:FileVersion="$VERSION"
+
+      - name: Paquet
+        run: |
+          mkdir -p dist
+          zip -j "dist/EnhancedFin_$VERSION.zip" bin/Release/net10.0/Jellyfin.Plugin.EnhancedFin.dll
+          echo "CHECKSUM=$(md5sum "dist/EnhancedFin_$VERSION.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Release GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "dist/EnhancedFin_$VERSION.zip" --title "EnhancedFin $VERSION" --notes-file changelog.txt
+
+      - name: Manifest
+        run: |
+          git checkout main
+          git pull --ff-only origin main
+          python3 - <<'PY'
+          import datetime, json, os
+
+          version = os.environ["VERSION"]
+          tag = os.environ["GITHUB_REF_NAME"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          entry = {
+              "version": version,
+              "changelog": open("changelog.txt").read().strip(),
+              "targetAbi": "12.0.0.0",
+              "sourceUrl": f"https://github.com/{repo}/releases/download/{tag}/EnhancedFin_{version}.zip",
+              "checksum": os.environ["CHECKSUM"],
+              "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }
+
+          with open("manifest.json") as f:
+              manifest = json.load(f)
+          versions = manifest[0]["versions"]
+          # Une version republiée remplace l'ancienne entrée au lieu de la doubler.
+          manifest[0]["versions"] = [entry] + [v for v in versions if v["version"] != version]
+          with open("manifest.json", "w") as f:
+              json.dump(manifest, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git commit -m "manifest : EnhancedFin $VERSION"
+          git push origin main
