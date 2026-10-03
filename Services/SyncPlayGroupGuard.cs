@@ -85,10 +85,18 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
                 // et un `HandleRequest` hors groupe enverrait une erreur au client.
                 // En pause aussi : l'hôte qui met en pause puis s'en va laisse un groupe qui
                 // ouvrirait le film chez qui le rejoint. Pas en attente (chargement en cours).
-                var group = _syncplay.ListGroups(session, new ListGroupsRequest())
-                    .FirstOrDefault(g => g.State is GroupStateType.Playing or GroupStateType.Paused
-                                         && g.Participants.Contains(session.UserName));
-                if (group is null) return;
+                //
+                // `HandleRequest(session, Stop)` arrête le groupe **de la session**, que Jellyfin
+                // n'expose pas ; les groupes ne connaissent leurs membres que par leur nom. Si
+                // ce compte est dans plusieurs groupes actifs (deux appareils), on ne sait pas
+                // lequel est celui de la session : on ne touche à rien plutôt que d'arrêter un
+                // groupe qu'on n'a pas vérifié.
+                var groups = _syncplay.ListGroups(session, new ListGroupsRequest())
+                    .Where(g => g.State is GroupStateType.Playing or GroupStateType.Paused
+                                && g.Participants.Contains(session.UserName))
+                    .ToList();
+                if (groups.Count != 1) return;
+                var group = groups[0];
 
                 // La session qui s'est arrêtée compte aussi : rejoindre un groupe ou enchaîner
                 // l'épisode suivant arrête un média puis en relance un, pendant le délai.

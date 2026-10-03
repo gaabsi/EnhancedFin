@@ -179,6 +179,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
         // PUT /api/EnhancedFin/v1/me/watchlist/{mediaKey}
         [HttpPut("me/watchlist/{mediaKey}")]
+        [RateLimit("outbound", 60)]
         public async Task<ActionResult> add(string mediaKey)
         {
             var user_id = current_user_id();
@@ -202,18 +203,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         [HttpDelete("me/watchlist/{mediaKey}")]
         public ActionResult remove(string mediaKey)
         {
-            var user_id = current_user_id();
-            if (user_id is null) return not_authenticated();
-
-            using var con = _db.open();
-            using var cmd = con.CreateCommand();
-            cmd.CommandText = "DELETE FROM watchlist WHERE user_id = $u AND media_key = $k";
-            cmd.Parameters.AddWithValue("$u", user_id);
-            cmd.Parameters.AddWithValue("$k", mediaKey);
-
-            return cmd.ExecuteNonQuery() == 0
-                ? problem(404, "Absent de la watchlist", $"'{mediaKey}' n'est pas dans la watchlist.")
-                : NoContent();
+            return delete_for_media(_db, "watchlist", mediaKey, "Absent de la watchlist", $"'{mediaKey}' n'est pas dans la watchlist.");
         }
     }
 }

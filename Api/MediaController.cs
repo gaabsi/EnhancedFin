@@ -69,6 +69,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         // Sert aux fiches de découverte, qui ont besoin du logo et du synopsis pour
         // s'afficher correctement alors que l'utilisateur n'a encore rien fait du média.
         [HttpGet("media/{mediaKey}")]
+        [RateLimit("outbound", 60)]
         public async Task<ActionResult> get(
             string mediaKey,
             [FromQuery] bool detail = false,
@@ -102,10 +103,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                        (SELECT 1     FROM follow      WHERE user_id=$u AND media_key=m.media_key),
                        (SELECT hidden_at FROM hidden_item WHERE user_id=$u AND media_key=m.media_key)
                 FROM media m
-                WHERE m.media_key = $k";
+                WHERE m.media_key = $k AND ($enrich OR " + SqlIsMine + @")";
             cmd.Parameters.AddWithValue("$u", user_id);
             cmd.Parameters.AddWithValue("$k", mediaKey);
+            cmd.Parameters.AddWithValue("$enrich", enrich);
 
+            // Sans `enrich`, un média auquel l'appelant n'est pas lié répond comme un média
+            // absent : le référentiel est partagé, sa présence dirait qu'un autre compte
+            // l'a noté ou masqué. Avec `enrich`, la fiche vient d'être demandée à TMDB.
             using var rd = cmd.ExecuteReader();
             if (!rd.Read())
                 return problem(404, "Média inconnu", $"'{mediaKey}' n'est pas dans le référentiel.");
@@ -196,6 +201,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         // Saisons d'une série, avec le nombre d'épisodes vus par l'appelant. Lecture
         // seule : ne fait pas entrer la série au référentiel.
         [HttpGet("media/{mediaKey}/seasons")]
+        [RateLimit("outbound", 60)]
         public async Task<ActionResult> seasons(string mediaKey)
         {
             var user_id = current_user_id();
@@ -222,6 +228,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         //
         // Épisodes d'une saison (TMDB), chacun avec son état « vu » pour l'appelant.
         [HttpGet("media/{mediaKey}/seasons/{season:int}")]
+        [RateLimit("outbound", 60)]
         public async Task<ActionResult> season(string mediaKey, int season)
         {
             var user_id = current_user_id();

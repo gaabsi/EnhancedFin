@@ -85,6 +85,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
         // GET /api/EnhancedFin/v1/search?q=inter&type=movie
         [HttpGet("search")]
+        [RateLimit("outbound", 60)]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -257,14 +258,17 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                        m.backdrop_url,
                        (SELECT overview FROM media_detail WHERE media_key = m.media_key)
                 FROM media m
-                WHERE m.media_type = $t AND m.title LIKE $q COLLATE NOCASE
-                ORDER BY CASE WHEN m.title LIKE $prefix COLLATE NOCASE THEN 0 ELSE 1 END,
+                WHERE m.media_type = $t AND m.title LIKE $q ESCAPE '\' COLLATE NOCASE
+                  AND " + SqlIsMine + @"
+                ORDER BY CASE WHEN m.title LIKE $prefix ESCAPE '\' COLLATE NOCASE THEN 0 ELSE 1 END,
                          m.title
                 LIMIT $limit";
             cmd.Parameters.AddWithValue("$u", user_id);
             cmd.Parameters.AddWithValue("$t", media_type);
-            cmd.Parameters.AddWithValue("$q", $"%{query.Trim()}%");
-            cmd.Parameters.AddWithValue("$prefix", $"{query.Trim()}%");
+            // `%` et `_` saisis sont des caractères, pas des jokers.
+            var literal = query.Trim().Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+            cmd.Parameters.AddWithValue("$q", $"%{literal}%");
+            cmd.Parameters.AddWithValue("$prefix", $"{literal}%");
             cmd.Parameters.AddWithValue("$limit", MaxResults);
 
             var results = new List<(string, SearchItem)>();
