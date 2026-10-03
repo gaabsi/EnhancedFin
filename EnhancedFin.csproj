@@ -30,4 +30,9 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Page de réglages, servie par Jellyfin depuis le DLL (Tableau de bord → Extensions). -->
+    <EmbeddedResource Include="Configuration\configPage.html" />
+  </ItemGroup>
+
 </Project>

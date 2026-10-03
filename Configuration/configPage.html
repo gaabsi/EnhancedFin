@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>EnhancedFin</title>
+</head>
+<body>
+    <div id="EnhancedFinConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+         data-require="emby-input,emby-button,emby-checkbox">
+        <div data-role="content">
+            <div class="content-primary">
+                <form id="EnhancedFinConfigForm">
+                    <div class="verticalSection">
+                        <h2 class="sectionTitle">EnhancedFin</h2>
+                        <p>Ratings, watchlist, follows and release calendar. API keys stay on this server:
+                            clients never see them. Changes apply immediately, no restart needed.</p>
+                    </div>
+
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">TMDB (required)</h3>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="TmdbApiKey">API key</label>
+                            <input id="TmdbApiKey" name="TmdbApiKey" type="password" is="emby-input" autocomplete="off" />
+                            <div class="fieldDescription">
+                                Metadata, search, trending and release dates. Free: create an account on
+                                <a is="emby-linkbutton" class="button-link" href="https://www.themoviedb.org/settings/api" target="_blank">themoviedb.org</a>,
+                                then Settings → API → "API Key" (v3, not the read access token).
+                            </div>
+                        </div>
+                        <button is="emby-button" type="button" class="raised emby-button" data-check="tmdb"><span>Test</span></button>
+                        <span class="enhancedfin-result" data-result="tmdb"></span>
+                    </div>
+
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">MDBList (optional)</h3>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="MdblistApiKey">API key</label>
+                            <input id="MdblistApiKey" name="MdblistApiKey" type="password" is="emby-input" autocomplete="off" />
+                            <div class="fieldDescription">
+                                Rotten Tomatoes scores on media pages. Free account on
+                                <a is="emby-linkbutton" class="button-link" href="https://mdblist.com/preferences/" target="_blank">mdblist.com</a>,
+                                then Preferences → API key (1,000 requests a day, scores are cached for 7 days).
+                            </div>
+                        </div>
+                        <button is="emby-button" type="button" class="raised emby-button" data-check="mdblist"><span>Test</span></button>
+                        <span class="enhancedfin-result" data-result="mdblist"></span>
+                    </div>
+
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">Seerr (optional)</h3>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="SeerrUrl">URL</label>
+                            <input id="SeerrUrl" name="SeerrUrl" type="url" is="emby-input" placeholder="http://seerr:5055" />
+                            <div class="fieldDescription">
+                                The address at which this Jellyfin server reaches Jellyseerr or Overseerr.
+                            </div>
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="SeerrApiKey">API key</label>
+                            <input id="SeerrApiKey" name="SeerrApiKey" type="password" is="emby-input" autocomplete="off" />
+                            <div class="fieldDescription">In Seerr: Settings → General → API Key. Enables availability and requests.</div>
+                        </div>
+                        <button is="emby-button" type="button" class="raised emby-button" data-check="seerr"><span>Test</span></button>
+                        <span class="enhancedfin-result" data-result="seerr"></span>
+                    </div>
+
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">ASS subtitles</h3>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="ConvertAssSubtitles" name="ConvertAssSubtitles" type="checkbox" is="emby-checkbox" />
+                                <span>Convert embedded ASS subtitles to SRT</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">
+                                <b>Rewrites your files.</b> After each library scan, embedded ASS tracks of .mkv files
+                                are converted to external .srt files and removed (stream copy, no re-encoding).
+                                For players that cannot render ASS; ASS styling is lost.
+                            </div>
+                        </div>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="KeepAssBackup" name="KeepAssBackup" type="checkbox" is="emby-checkbox" />
+                                <span>Keep a backup of each converted file</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">
+                                The original is kept as a hidden ".file.mkv.ass-backup" next to it. Doubles disk usage
+                                until you delete the backups.
+                            </div>
+                        </div>
+                    </div>
+
+                    <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                        <span>Save</span>
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <script type="text/javascript">
+            (function () {
+                var pluginId = '2dd4485f-d630-456e-9ed4-6bb35c46ebf9';
+                var page = document.querySelector('#EnhancedFinConfigPage');
+                var form = page.querySelector('#EnhancedFinConfigForm');
+                var textFields = ['TmdbApiKey', 'MdblistApiKey', 'SeerrUrl', 'SeerrApiKey'];
+                var checkFields = ['ConvertAssSubtitles', 'KeepAssBackup'];
+
+                function field(id) {
+                    return page.querySelector('#' + id);
+                }
+
+                function showResult(service, ok, message) {
+                    var result = page.querySelector('[data-result="' + service + '"]');
+                    result.textContent = (ok ? '✓ ' : '✗ ') + message;
+                    result.style.color = ok ? '#52b54b' : '#cc3333';
+                    result.style.marginLeft = '1em';
+                }
+
+                page.addEventListener('pageshow', function () {
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        textFields.forEach(function (id) { field(id).value = config[id] || ''; });
+                        checkFields.forEach(function (id) { field(id).checked = !!config[id]; });
+                        Dashboard.hideLoadingMsg();
+                    });
+                });
+
+                // Teste ce qui est **saisi**, avant d'enregistrer.
+                page.querySelectorAll('[data-check]').forEach(function (button) {
+                    button.addEventListener('click', function () {
+                        var service = button.getAttribute('data-check');
+                        var body = service === 'seerr'
+                            ? { url: field('SeerrUrl').value, key: field('SeerrApiKey').value }
+                            : { key: field(service === 'tmdb' ? 'TmdbApiKey' : 'MdblistApiKey').value };
+
+                        showResult(service, true, 'Testing…');
+                        ApiClient.ajax({
+                            type: 'POST',
+                            url: ApiClient.getUrl('api/EnhancedFin/v1/admin/check/' + service),
+                            data: JSON.stringify(body),
+                            contentType: 'application/json',
+                            dataType: 'json'
+                        }).then(function (check) {
+                            showResult(service, check.ok, check.message);
+                        }, function () {
+                            showResult(service, false, 'The test could not run (are you an administrator?).');
+                        });
+                    });
+                });
+
+                form.addEventListener('submit', function (e) {
+                    e.preventDefault();
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        textFields.forEach(function (id) { config[id] = field(id).value.trim(); });
+                        checkFields.forEach(function (id) { config[id] = field(id).checked; });
+                        ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                            Dashboard.processPluginConfigurationUpdateResult(result);
+                        });
+                    });
+                    return false;
+                });
+            })();
+        </script>
+    </div>
+</body>
+</html>
