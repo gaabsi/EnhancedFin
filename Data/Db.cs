@@ -27,8 +27,15 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
         {
             var dir = Path.Combine(app_paths.PluginConfigurationsPath, "EnhancedFin");
             Directory.CreateDirectory(dir);
-            ConnectionString = $"Data Source={Path.Combine(dir, "EnhancedFin.db")}";
+            // Clés étrangères activées à chaque ouverture : non activées par défaut en
+            // SQLite, les REFERENCES du schéma seraient purement décoratives.
+            ConnectionString = new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.Combine(dir, "EnhancedFin.db"),
+                ForeignKeys = true,
+            }.ToString();
 
+            enable_wal();
             ensure_schema();
             ensure_columns();
             fix_svg_logos();
@@ -59,14 +66,23 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
         {
             var con = new SqliteConnection(ConnectionString);
             con.Open();
-
-            // Non activées par défaut en SQLite : sans ça, les REFERENCES du schéma
-            // seraient purement décoratives et les ON DELETE CASCADE inopérants.
-            using var pragma = con.CreateCommand();
-            pragma.CommandText = "PRAGMA foreign_keys = ON;";
-            pragma.ExecuteNonQuery();
-
             return con;
+        }
+
+        /// <summary>
+        /// Passe la base en journal WAL : les lectures ne bloquent plus les écritures (le
+        /// client lance plusieurs listes en parallèle pendant qu'on note un film). Le mode
+        /// est mémorisé dans le fichier, l'appel suffit une fois.
+        ///
+        /// ⚠️ La base tient alors en trois fichiers (`.db`, `-wal`, `-shm`) : une
+        /// sauvegarde copie le dossier entier, jamais le seul `.db`.
+        /// </summary>
+        private void enable_wal()
+        {
+            using var con = open();
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = "PRAGMA journal_mode = WAL;";
+            cmd.ExecuteNonQuery();
         }
 
         /// <summary>

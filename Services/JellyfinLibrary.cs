@@ -64,10 +64,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// <summary>Index déjà construit, par utilisateur.</summary>
         private record CachedIndex(Dictionary<string, LibraryMatch> Entries, DateTime BuiltAt);
 
-        // Statiques, et non champs d'instance : le service est enregistré en `Scoped`,
-        // donc recréé à chaque requête HTTP — un cache d'instance ne survivrait pas.
-        // Même raisonnement que le HttpClient statique de TmdbClient.
-        private static readonly ConcurrentDictionary<Guid, CachedIndex> _index = new();
+        // Champs d'instance : le service est un singleton (voir `PluginServiceRegistrator`),
+        // ses caches vivent donc aussi longtemps que le serveur.
+        private readonly ConcurrentDictionary<Guid, CachedIndex> _index = new();
 
         /// <summary>
         /// Médias vus, par utilisateur, gardés deux minutes : `me/ratings/pending` les
@@ -76,14 +75,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// </summary>
         private static readonly TimeSpan WatchedTtl = TimeSpan.FromMinutes(2);
 
-        private static readonly ConcurrentDictionary<Guid, (IReadOnlyDictionary<string, WatchedMedia> Entries, DateTime BuiltAt)> _watched = new();
+        private readonly ConcurrentDictionary<Guid, (IReadOnlyDictionary<string, WatchedMedia> Entries, DateTime BuiltAt)> _watched = new();
 
         // Un verrou **par utilisateur** : la construction parcourt toute la
         // bibliothèque, et l'app iOS déclenche trois appels de liste en parallèle au
         // chargement de l'Explorer. Sans lui, les trois reconstruisaient le même index
         // en même temps. Par utilisateur et non global : deux profils distincts n'ont
         // aucune raison de s'attendre.
-        private static readonly ConcurrentDictionary<Guid, object> _locks = new();
+        private readonly ConcurrentDictionary<Guid, object> _locks = new();
 
         private readonly ILibraryManager _library;
         private readonly IUserManager _users;
@@ -272,7 +271,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         }
 
         /// <summary>Index en cache s'il est encore valide, null sinon.</summary>
-        private static Dictionary<string, LibraryMatch>? fresh(Guid user_id) =>
+        private Dictionary<string, LibraryMatch>? fresh(Guid user_id) =>
             _index.TryGetValue(user_id, out var cached)
                 && DateTime.UtcNow - cached.BuiltAt < IndexTtl
                     ? cached.Entries
