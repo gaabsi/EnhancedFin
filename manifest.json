@@ -10,7 +10,7 @@
     "versions": [
       {
         "version": "1.0.0.0",
-        "changelog": "publication : dépôt de plugins Jellyfin et versions automatiques\n\nmanifest.json pour ajouter EnhancedFin comme dépôt dans Jellyfin. Un tag vX.Y.Z\ncompile la version, la publie en Release GitHub et l'ajoute au manifest. README :\ninstallation depuis le catalogue.",
+        "changelog": "version publique de enhancedFin",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/gaabsi/EnhancedFin/releases/download/v1.0.0/EnhancedFin_1.0.0.0.zip",
         "checksum": "db79ebb73f6300b1b6f48b08b0480f7e",
