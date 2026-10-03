@@ -134,6 +134,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
                 if (!ok) return null;
 
                 users = parse_users(body);
+                if (users is null) return null;
                 _cache.Set("users", users, new MemoryCacheEntryOptions
                 {
                     Size = 1,
@@ -259,10 +260,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         }
 
         /// <summary>
-        /// Comptes Seerr indexés par compte Jellyfin. Seerr stocke l'identifiant sans
-        /// tirets ; `Guid.TryParse` accepte les deux formes.
+        /// Comptes Seerr indexés par compte Jellyfin, null si la réponse est illisible.
+        /// Seerr stocke l'identifiant sans tirets ; `Guid.TryParse` accepte les deux formes.
         /// </summary>
-        private static Dictionary<Guid, int> parse_users(string body)
+        private static Dictionary<Guid, int>? parse_users(string body)
         {
             var users = new Dictionary<Guid, int>();
             try
@@ -282,7 +283,11 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
                     }
                 }
             }
-            catch (JsonException) { }
+            catch (JsonException)
+            {
+                // Illisible n'est pas « aucun compte lié » : ne rien mettre en cache.
+                return null;
+            }
 
             return users;
         }

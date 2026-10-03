@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.EnhancedFin.Configuration;
 using Microsoft.Extensions.Caching.Memory;
@@ -272,6 +273,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         private static readonly TimeSpan _miss_ttl = TimeSpan.FromMinutes(10);
 
         /// <summary>
+        /// Durée de vie d'une fiche média au cache : juste de quoi éviter deux appels pour
+        /// la même action. Le référentiel `media` reste le vrai cache persistant.
+        /// </summary>
+        private static readonly TimeSpan _item_ttl = TimeSpan.FromMinutes(10);
+
+        /// <summary>
         /// Durée de vie d'une fiche personne au cache.
         ///
         /// Longue à dessein : une filmographie ne bouge pas dans la journée, et
@@ -410,7 +417,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// Output :
         /// - item (TmdbItem | null) : fiche, null si introuvable
         /// </summary>
-        public async Task<TmdbItem?> get_item(string media_type, int tmdb_id)
+        public async Task<TmdbItem?> get_item(string media_type, int tmdb_id, CancellationToken cancellation = default)
         {
             // `append_to_response` évite un second aller-retour : les logos arrivent
             // avec la fiche. `include_image_language` est indispensable — sans lui
@@ -424,24 +431,30 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             var with_images =
                 $"&append_to_response=images,{credits_block}&include_image_language=fr,en,null";
 
+            // Fiche gardée quelques minutes : suivre un film la demandait deux fois de
+            // suite (entrée au référentiel, puis date de sortie).
+            var cache_key = $"item|{media_type}|{tmdb_id}";
+            if (_cache.TryGetValue(cache_key, out TmdbItem? hit) && hit is not null) return hit;
+
             // Une absence est mise en cache elle aussi : sans ça, chaque `PUT` sur une
             // clé inexistante repartait vers TMDB.
             var miss_key = $"miss|{media_type}|{tmdb_id}";
             if (_cache.TryGetValue(miss_key, out _)) return null;
 
-            var item = await fetch<TmdbItem>($"/{media_type}/{tmdb_id}", with_images);
+            var (item, not_found) = await fetch_result<TmdbItem>($"/{media_type}/{tmdb_id}", with_images, cancellation: cancellation);
             if (item is null)
             {
-                put(miss_key, "", _miss_ttl);
+                if (not_found) put(miss_key, "", _miss_ttl);
                 return null;
             }
 
             if (is_non_latin(item.DisplayTitle))
             {
-                var en = await fetch<TmdbItem>($"/{media_type}/{tmdb_id}", with_images, lang: "en-US");
-                if (en is not null && !is_non_latin(en.DisplayTitle)) return en;
+                var en = (await fetch_result<TmdbItem>($"/{media_type}/{tmdb_id}", with_images, "en-US", cancellation)).Value;
+                if (en is not null && !is_non_latin(en.DisplayTitle)) item = en;
             }
 
+            put(cache_key, item, _item_ttl);
             return item;
         }
 
@@ -456,17 +469,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// Output :
         /// - episodes (List&lt;TmdbEpisode&gt;) : épisodes de toutes les saisons, hors saison 0 (specials)
         /// </summary>
-        public async Task<List<TmdbEpisode>> get_episodes(int tmdb_id)
+        public async Task<List<TmdbEpisode>> get_episodes(int tmdb_id, CancellationToken cancellation = default)
         {
-            var episodes = new List<TmdbEpisode>();
+            // En parallèle : une saison par appel, et une longue série en compte des
+            // dizaines. `WhenAll` garde l'ordre des saisons.
+            var seasons = await get_seasons(tmdb_id, cancellation);
+            var data = await Task.WhenAll(seasons.Select(s => get_season(tmdb_id, s.SeasonNumber, cancellation)));
 
-            foreach (var season in await get_seasons(tmdb_id))
-            {
-                var data = await get_season(tmdb_id, season.SeasonNumber);
-                if (data?.Episodes is not null) episodes.AddRange(data.Episodes);
-            }
-
-            return episodes;
+            return data.Where(d => d?.Episodes is not null).SelectMany(d => d!.Episodes!).ToList();
         }
 
         /// <summary>
@@ -481,12 +491,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// Output :
         /// - seasons (List&lt;TmdbSeasonRef&gt;) : saisons, liste vide si inconnue
         /// </summary>
-        public async Task<List<TmdbSeasonRef>> get_seasons(int tmdb_id)
+        public async Task<List<TmdbSeasonRef>> get_seasons(int tmdb_id, CancellationToken cancellation = default)
         {
             var cache_key = $"seasons|{tmdb_id}";
             if (_cache.TryGetValue(cache_key, out List<TmdbSeasonRef>? hit) && hit is not null) return hit;
 
-            var detail = await fetch<TmdbTvDetail>($"/tv/{tmdb_id}");
+            var (detail, not_found) = await fetch_result<TmdbTvDetail>($"/tv/{tmdb_id}", cancellation: cancellation);
+            if (detail is null && !not_found) return new List<TmdbSeasonRef>();
+
             var seasons = (detail?.Seasons ?? new List<TmdbSeasonRef>())
                 .Where(s => s.SeasonNumber > 0)
                 .OrderBy(s => s.SeasonNumber)
@@ -508,7 +520,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// Output :
         /// - season (TmdbSeason | null) : saison, null si inconnue
         /// </summary>
-        public async Task<TmdbSeason?> get_season(int tmdb_id, int season_number)
+        public async Task<TmdbSeason?> get_season(int tmdb_id, int season_number, CancellationToken cancellation = default)
         {
             var cache_key = $"season|{tmdb_id}|{season_number}";
             if (_cache.TryGetValue(cache_key, out TmdbSeason? hit) && hit is not null) return hit;
@@ -516,10 +528,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             var miss_key = $"miss|season|{tmdb_id}|{season_number}";
             if (_cache.TryGetValue(miss_key, out _)) return null;
 
-            var season = await fetch<TmdbSeason>($"/tv/{tmdb_id}/season/{season_number}");
+            var (season, not_found) = await fetch_result<TmdbSeason>($"/tv/{tmdb_id}/season/{season_number}", cancellation: cancellation);
             if (season is null)
             {
-                put(miss_key, "", _miss_ttl);
+                if (not_found) put(miss_key, "", _miss_ttl);
                 return null;
             }
 
@@ -552,10 +564,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             var miss_key = $"miss|person|{tmdb_id}";
             if (_cache.TryGetValue(miss_key, out _)) return null;
 
-            var person = await fetch<TmdbPerson>($"/person/{tmdb_id}", "&append_to_response=combined_credits");
+            var (person, not_found) = await fetch_result<TmdbPerson>($"/person/{tmdb_id}", "&append_to_response=combined_credits");
             if (person is null)
             {
-                put(miss_key, "", _miss_ttl);
+                if (not_found) put(miss_key, "", _miss_ttl);
                 return null;
             }
 
@@ -603,34 +615,51 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
 
         private async Task<T?> fetch<T>(string path, string extra = "", string lang = "fr-FR")
             where T : class
+            => (await fetch_result<T>(path, extra, lang)).Value;
+
+        /// <summary>
+        /// Appel TMDB, en distinguant « TMDB ne connaît pas » d'« appel raté ».
+        ///
+        /// Seul un 404 est une réponse : il peut se mettre en cache. Un timeout, un 429 ou
+        /// une clé absente sont passagers ; les cacher donnait dix minutes de « média
+        /// introuvable » sur des médias bien réels.
+        ///
+        /// Parametres :
+        /// - path (string) : chemin de l'API, sans la base
+        /// - extra (string) : paramètres de requête supplémentaires, `&amp;…`
+        /// - lang (string) : langue demandée
+        ///
+        /// Output :
+        /// - result ((T?, bool)) : la réponse (null si rien) ; vrai si TMDB a répondu 404
+        /// </summary>
+        private async Task<(T? Value, bool NotFound)> fetch_result<T>(string path, string extra = "", string lang = "fr-FR", CancellationToken cancellation = default)
+            where T : class
         {
             var key = Plugin.Instance?.Configuration?.TmdbApiKey;
             if (string.IsNullOrWhiteSpace(key))
             {
                 _logger.LogWarning("[EnhancedFin] Clé API TMDB non configurée");
-                return null;
+                return (null, false);
             }
 
             var url = $"{BaseUrl}{path}?api_key={key}&language={lang}{extra}";
             try
             {
-                using var response = await _client.GetAsync(url);
+                using var response = await _client.GetAsync(url, cancellation);
+                if (response.StatusCode == HttpStatusCode.NotFound) return (null, true);
                 if (!response.IsSuccessStatusCode)
                 {
-                    // 404 = média inexistant, cas normal lors d'un sondage movie puis tv.
-                    if (response.StatusCode != HttpStatusCode.NotFound)
-                        _logger.LogWarning("[EnhancedFin] TMDB {Path} → HTTP {Code}",
-                                           path, (int)response.StatusCode);
-                    return null;
+                    _logger.LogWarning("[EnhancedFin] TMDB {Path} → HTTP {Code}", path, (int)response.StatusCode);
+                    return (null, false);
                 }
 
-                var body = await response.Content.ReadAsStringAsync();
-                return JsonSerializer.Deserialize<T>(body);
+                var body = await response.Content.ReadAsStringAsync(cancellation);
+                return (JsonSerializer.Deserialize<T>(body), false);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
             {
                 _logger.LogError("[EnhancedFin] TMDB {Path} a échoué : {Message}", path, ex.Message);
-                return null;
+                return (null, false);
             }
         }
     }

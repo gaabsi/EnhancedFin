@@ -334,7 +334,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 }
                 transaction.Commit();
             }
-            catch (Microsoft.Data.Sqlite.SqliteException ex) when (ex.SqliteErrorCode == 19)
+            catch (Microsoft.Data.Sqlite.SqliteException ex) when (is_unknown_media(ex))
             {
                 return problem(404, "Média inconnu", "le média doit d'abord être enregistré dans `media`.");
             }

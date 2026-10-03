@@ -3,6 +3,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.EnhancedFin.Data;
 using Microsoft.Data.Sqlite;
@@ -130,27 +131,41 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// Output :
         /// - exists (bool) : vrai si le média est disponible en base à l'issue de l'appel
         /// </summary>
-        public async Task<bool> ensure_exists(string media_key, bool force = false)
+        public async Task<bool> ensure_exists(string media_key, bool force = false, CancellationToken cancellation = default)
         {
             var parts = split(media_key);
             if (parts is null) return false;
-
-            using var con = _db.open();
 
             // `force` saute ce raccourci pour atteindre l'UPSERT et compléter une
             // fiche déjà présente. Sans lui, un média entré une fois en base n'était
             // plus jamais enrichi — la boucle d'entretien de RefreshTask ne faisait
             // rien du tout, malgré son commentaire.
-            if (!force && exists(con, media_key)) return true;
+            if (!force)
+            {
+                using var check = _db.open();
+                if (exists(check, media_key)) return true;
+            }
 
-            var item = await _tmdb.get_item(parts.Value.Type, parts.Value.TmdbId);
+            // Connexion ouverte **après** l'appel TMDB, qui peut durer plusieurs
+            // secondes : la garder ouverte pendant ce temps bloquerait d'autres écritures.
+            var item = await _tmdb.get_item(parts.Value.Type, parts.Value.TmdbId, cancellation);
+            var now = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+            using var con = _db.open();
+
             if (item is null)
             {
                 _logger.LogWarning("[EnhancedFin] {Key} introuvable sur TMDB", media_key);
+
+                // La tentative est notée quand même : `RefreshTask` trie par
+                // `refreshed_at`, et une fiche que TMDB ne complète pas restait sinon en
+                // tête du lot à chaque passage, en prenant la place des autres.
+                using var touch = con.CreateCommand();
+                touch.CommandText = "UPDATE media SET refreshed_at = $now WHERE media_key = $k";
+                touch.Parameters.AddWithValue("$now", now);
+                touch.Parameters.AddWithValue("$k", media_key);
+                touch.ExecuteNonQuery();
                 return false;
             }
-
-            var now = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
 
             using var transaction = con.BeginTransaction();
 
@@ -276,7 +291,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// Output :
         /// - count (int) : nombre d'épisodes enregistrés
         /// </summary>
-        public async Task<int> refresh_releases(string media_key)
+        public async Task<int> refresh_releases(string media_key, CancellationToken cancellation = default)
         {
             var parts = split(media_key);
             if (parts is null) return 0;
@@ -285,9 +300,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             // ligne de `release` en saison 0 / épisode 0 : le calendrier n'a pas à
             // savoir qu'il s'agit d'un film, il affiche une date et un titre.
             if (parts.Value.Type == "movie")
-                return await refresh_movie_release(media_key, parts.Value.TmdbId);
+                return await refresh_movie_release(media_key, parts.Value.TmdbId, cancellation);
 
-            var episodes = await _tmdb.get_episodes(parts.Value.TmdbId);
+            var episodes = await _tmdb.get_episodes(parts.Value.TmdbId, cancellation);
             if (episodes.Count == 0) return 0;
 
             var now = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
@@ -334,9 +349,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// Output :
         /// - count (int) : 1 si une ligne a été écrite, 0 si TMDB ne connaît pas le film
         /// </summary>
-        private async Task<int> refresh_movie_release(string media_key, int tmdb_id)
+        private async Task<int> refresh_movie_release(string media_key, int tmdb_id, CancellationToken cancellation)
         {
-            var movie = await _tmdb.get_item("movie", tmdb_id);
+            var movie = await _tmdb.get_item("movie", tmdb_id, cancellation);
             if (movie is null) return 0;
 
             // La ligne est écrite **même sans date de sortie** (`air_date` est
