@@ -69,6 +69,8 @@ There is no settings page: edit the XML file directly.
 | `TmdbApiKey` | **yes** | metadata, search, trending, release dates |
 | `MdblistApiKey` | no | Rotten Tomatoes scores — omitted if empty |
 | `SeerrUrl` / `SeerrApiKey` | no | availability and requests — omitted if empty |
+| `ConvertAssSubtitles` | no (`false`) | **rewrites your files**: after each library scan, converts embedded ASS subtitles of `.mkv` files to external `.srt` and removes the converted tracks (stream copy, no re-encoding). Useful for players that cannot render ASS. ASS styling is lost. |
+| `KeepAssBackup` | no (`true`) | keeps each original as a hidden `.<name>.mkv.ass-backup` next to the film. Doubles disk usage until you delete the backups. |
 
 These keys are secrets: the XML file is git-ignored, keep it that way.
 
