@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "1.0.1.0",
+        "changelog": "Adds the TMDB attribution (logo and notice) to the settings page.",
+        "targetAbi": "12.0.0.0",
+        "sourceUrl": "https://github.com/gaabsi/EnhancedFin/releases/download/v1.0.1/EnhancedFin_1.0.1.0.zip",
+        "checksum": "0f83bfeb85a5ecf2d125d107c33d7709",
+        "timestamp": "2026-10-04T13:20:05Z"
+      },
+      {
         "version": "1.0.0.0",
         "changelog": "version publique de enhancedFin",
         "targetAbi": "12.0.0.0",
