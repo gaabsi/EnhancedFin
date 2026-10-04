@@ -176,7 +176,7 @@ them. Clients never see your API keys.
 
 EnhancedFin is built on [Jellyfin](https://jellyfin.org) and uses data from
 [TMDB](https://www.themoviedb.org) and [MDBList](https://mdblist.com). Thanks to their
-contributors. This product uses the TMDB API but is not endorsed or certified by TMDB.
+contributors. This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.
 
 EnhancedFin is an independent project, not affiliated with or endorsed by Jellyfin.
 
