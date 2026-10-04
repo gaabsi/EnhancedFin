@@ -113,6 +113,18 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
             // l'ajout du bloc : `GET /media` la relit une fois, voir
             // `MediaCatalog.needs_facts`.
             add_column(con, "media_detail", "facts_refreshed_at", "TEXT");
+
+            // Identifiant IMDb et langue originale. Ajoutés après coup : à leur création,
+            // toutes les fiches sont marquées à relire (`facts_refreshed_at` à NULL), et
+            // `GET /media` les complète une par une, à leur prochaine ouverture.
+            var imdb_added = add_column(con, "media_detail", "imdb_id", "TEXT");
+            var language_added = add_column(con, "media_detail", "original_language", "TEXT");
+            if (imdb_added || language_added)
+            {
+                using var reset = con.CreateCommand();
+                reset.CommandText = "UPDATE media_detail SET facts_refreshed_at = NULL";
+                reset.ExecuteNonQuery();
+            }
         }
 
         /// <summary>
@@ -123,6 +135,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
         /// - table (string) : nom de la table
         /// - column (string) : nom de la colonne
         /// - type (string) : type SQLite
+        ///
+        /// Output :
+        /// - added (bool) : vrai si la colonne vient d'être créée
         /// </summary>
         /// <remarks>
         /// Les trois identifiants sont **interpolés**, et il n'y a pas d'alternative :
@@ -132,7 +147,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
         /// appel construit depuis une liste externe romprait sans bruit. Le garde
         /// ci-dessous le rend explicite et bruyant.
         /// </remarks>
-        private static void add_column(SqliteConnection con, string table, string column, string type)
+        private static bool add_column(SqliteConnection con, string table, string column, string type)
         {
             if (!SqlIdentifier.IsMatch(table) || !SqlIdentifier.IsMatch(column) || !SqlIdentifier.IsMatch(type))
                 throw new ArgumentException($"Identifiant SQL invalide : {table}.{column} {type}");
@@ -144,13 +159,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
             {
                 while (rd.Read())
                 {
-                    if (rd.GetString(1) == column) return;
+                    if (rd.GetString(1) == column) return false;
                 }
             }
 
             using var alter = con.CreateCommand();
             alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {type}";
             alter.ExecuteNonQuery();
+            return true;
         }
 
         /// <summary>

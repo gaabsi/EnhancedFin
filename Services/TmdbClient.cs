@@ -110,7 +110,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         // séries **et** personnes dans le même tableau. Nul partout ailleurs, le type
         // étant alors connu de l'appelant.
         [property: JsonPropertyName("media_type")] string? MediaType = null,
-        [property: JsonPropertyName("created_by")] List<TmdbCreator>? CreatedBy = null)
+        [property: JsonPropertyName("created_by")] List<TmdbCreator>? CreatedBy = null,
+        // Fiche détaillée seulement (`get_item`).
+        [property: JsonPropertyName("original_language")] string? OriginalLanguage = null,
+        [property: JsonPropertyName("external_ids")] TmdbExternalIds? ExternalIds = null)
     {
         /// <summary>
         /// Logo à retenir, par ordre de préférence : français, anglais, puis sans
@@ -213,6 +216,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
 
     public record TmdbSearchResponse(
         [property: JsonPropertyName("results")] List<TmdbItem>? Results);
+
+    public record TmdbExternalIds(
+        [property: JsonPropertyName("imdb_id")] string? ImdbId);
 
     public record TmdbEpisode(
         [property: JsonPropertyName("episode_number")] int EpisodeNumber,
@@ -451,8 +457,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             // `aggregate_credits` pour une série, dont le `credits` est presque
             // toujours vide.
             var credits_block = media_type == "tv" ? "aggregate_credits" : "credits";
+            // `external_ids` : l'identifiant IMDb, que TMDB ne donne en tête de fiche que
+            // pour un film.
             var with_images =
-                $"&append_to_response=images,{credits_block}&include_image_language=fr,en,null";
+                $"&append_to_response=images,{credits_block},external_ids&include_image_language=fr,en,null";
 
             // Fiche gardée quelques minutes : suivre un film la demandait deux fois de
             // suite (entrée au référentiel, puis date de sortie).

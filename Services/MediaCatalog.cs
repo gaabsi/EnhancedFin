@@ -221,6 +221,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             // Même piège que le synopsis : TMDB rend `""` pour une date inconnue.
             var release_date = string.IsNullOrWhiteSpace(item.Date) ? null : item.Date;
             var directors = item.Directors.Count > 0 ? string.Join(", ", item.Directors) : null;
+            var imdb_id = string.IsNullOrWhiteSpace(item.ExternalIds?.ImdbId) ? null : item.ExternalIds.ImdbId;
+            var original_language = string.IsNullOrWhiteSpace(item.OriginalLanguage) ? null : item.OriginalLanguage;
 
             // Écrite même quand TMDB n'a rien renvoyé : `facts_refreshed_at` doit être
             // posé, sinon la fiche serait relue à chaque ouverture (`needs_facts`).
@@ -230,19 +232,24 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
                 // casting ne doit pas effacer celui de la migration.
                 cmd.CommandText = @"
                     INSERT INTO media_detail (media_key, overview, cast_json, release_date,
-                                              directors, facts_refreshed_at)
-                    VALUES ($k, $o, $cast, $date, $directors, $now)
+                                              directors, imdb_id, original_language,
+                                              facts_refreshed_at)
+                    VALUES ($k, $o, $cast, $date, $directors, $imdb, $lang, $now)
                     ON CONFLICT(media_key) DO UPDATE SET
                         overview           = COALESCE(excluded.overview, media_detail.overview),
                         cast_json          = COALESCE(excluded.cast_json, media_detail.cast_json),
                         release_date       = COALESCE(excluded.release_date, media_detail.release_date),
                         directors          = COALESCE(excluded.directors, media_detail.directors),
+                        imdb_id            = COALESCE(excluded.imdb_id, media_detail.imdb_id),
+                        original_language  = COALESCE(excluded.original_language, media_detail.original_language),
                         facts_refreshed_at = excluded.facts_refreshed_at";
                 cmd.Parameters.AddWithValue("$k", media_key);
                 cmd.Parameters.AddWithValue("$o", (object?)overview ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("$cast", (object?)cast_json ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("$date", (object?)release_date ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("$directors", (object?)directors ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$imdb", (object?)imdb_id ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$lang", (object?)original_language ?? DBNull.Value);
                 cmd.Parameters.AddWithValue("$now", now);
                 cmd.ExecuteNonQuery();
             }

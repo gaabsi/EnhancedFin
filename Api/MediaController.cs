@@ -515,14 +515,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         ///
         /// Output :
         /// - detail (object | null) : synopsis, casting, date de sortie (`AAAA-MM-JJ`),
-        ///   réalisation
+        ///   réalisation, identifiant IMDb, langue originale (ISO 639-1)
         /// </summary>
         private static object? read_detail(
             Microsoft.Data.Sqlite.SqliteConnection con, string media_key)
         {
             using var cmd = con.CreateCommand();
             cmd.CommandText = @"
-                SELECT overview, cast_json, release_date, directors
+                SELECT overview, cast_json, release_date, directors, imdb_id, original_language
                 FROM media_detail WHERE media_key = $k";
             cmd.Parameters.AddWithValue("$k", media_key);
 
@@ -561,6 +561,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 cast,
                 releaseDate = rd.IsDBNull(2) ? null : rd.GetString(2),
                 directors = rd.IsDBNull(3) ? null : rd.GetString(3),
+                imdbId = rd.IsDBNull(4) ? null : rd.GetString(4),
+                originalLanguage = rd.IsDBNull(5) ? null : rd.GetString(5),
             };
         }
 
