@@ -103,7 +103,7 @@ Media are identified by a **media key**, `"{type}:{tmdbId}"`, e.g. `movie:550` o
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/me` | identity, admin flag, collection counters |
-| `GET` | `/media/{key}` | full media page + my data (`?detail=true` for cast, directors, scores) |
+| `GET` | `/media/{key}` | full media page + my data (`?detail=true` for cast, directors, scores, IMDb id, original language) |
 | `GET` | `/media/{key}/seasons` | seasons, with my watched count |
 | `GET` | `/media/{key}/seasons/{n}` | episodes, with my watched state |
 | `GET` | `/media/{key}/playable` | `{ playable, itemId? }` — playable on this server for me (`?season=&episode=`) |
