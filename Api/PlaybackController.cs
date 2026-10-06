@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using Jellyfin.Plugin.EnhancedFin.Data;
 using Jellyfin.Plugin.EnhancedFin.Services;
+using MediaBrowser.Controller.Configuration;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 
@@ -45,20 +46,25 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         private readonly Db _db;
         private readonly MediaCatalog _catalog;
         private readonly TmdbClient _tmdb;
+        private readonly IServerConfigurationManager _config;
 
-        public PlaybackController(Db db, MediaCatalog catalog, TmdbClient tmdb)
+        public PlaybackController(Db db, MediaCatalog catalog, TmdbClient tmdb, IServerConfigurationManager config)
         {
             _db = db;
             _catalog = catalog;
             _tmdb = tmdb;
+            _config = config;
         }
 
         // GET /api/EnhancedFin/v1/me/continue-watching?limit=20
         //
-        // Une entrée par média : le dernier épisode touché s'il est en cours (ou juste
-        // ouvert, pour une série : c'est le prochain à voir) ; pour une série dont il
-        // est vu, le prochain à voir (`next_up`, position 0), comme le « À suivre » de
-        // Jellyfin. Un film vu ou jamais lancé, une série à jour : absents.
+        // Une entrée par média : le dernier épisode touché s'il est en cours ; pour une
+        // série dont il est vu, le prochain à voir (`next_up`, position 0), comme le
+        // « À suivre » de Jellyfin. Un film vu, une série à jour : absents.
+        //
+        // Comme Jellyfin, une ouverture sous `MinResumePct` du serveur (5 % par défaut)
+        // ne compte pas : un film ouvert puis fermé n'est pas une reprise, une série
+        // seulement entrouverte n'apparaît pas (voir `last_touched`).
         [HttpGet("me/continue-watching")]
         public async Task<ActionResult> continue_watching([FromQuery] int limit = 20)
         {
@@ -68,7 +74,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                 return problem(400, "Limite invalide", "limit doit être compris entre 1 et 200.");
 
             var items = new List<object>();
-            foreach (var row in last_touched(user.Value))
+            foreach (var row in last_touched(user.Value, _config.Configuration.MinResumePct / 100.0))
             {
                 if (items.Count == limit) break;
 
@@ -80,7 +86,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                         continue;
                     (season, episode, position, duration) = (next.Season, next.Episode, 0, 0);
                 }
-                else if (position <= 0 && row.MediaType != "tv") continue;
 
                 var details = row.MediaType == "tv" && MediaCatalog.split(row.MediaKey) is { } parts
                     ? (await _tmdb.get_season(parts.TmdbId, season, HttpContext.RequestAborted))?.Episodes?
@@ -118,7 +123,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
         /// <summary>
         /// Le dernier épisode touché de chaque média (un film : sa ligne), du plus récent
-        /// au plus ancien, sans les médias masqués.
+        /// au plus ancien, sans les médias masqués. Une ouverture sous le seuil de
+        /// reprise (ni vue, ni au-delà de `min_resume`) est ignorée : TLOU E8 entrouvert
+        /// ne cache pas E1 en cours.
         ///
         /// Règle de masquage : l'item est caché tant que hidden_at >= updated_at.
         /// Reprendre la lecture rafraîchit updated_at et le fait donc réapparaître
@@ -126,11 +133,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         ///
         /// Parametres :
         /// - user (Guid) : utilisateur
+        /// - min_resume (double) : seuil de reprise du serveur, en fraction (0,05)
         ///
         /// Output :
         /// - rows (List&lt;LastTouched&gt;) : une ligne par média, `Watched` selon `SqlIsWatched`
         /// </summary>
-        private List<LastTouched> last_touched(Guid user)
+        private List<LastTouched> last_touched(Guid user, double min_resume)
         {
             using var con = _db.open();
             using var cmd = con.CreateCommand();
@@ -143,6 +151,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                            ) AS rang
                     FROM playback p
                     WHERE p.user_id = $u
+                      AND ({SqlIsWatched} OR p.position_ticks >= p.duration_ticks * $min)
                 )
                 SELECT p.media_key, p.season, p.episode, p.position_ticks,
                        p.duration_ticks, {SqlIsWatched}, p.lang, p.updated_at,
@@ -155,6 +164,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                   AND (h.hidden_at IS NULL OR h.hidden_at < p.updated_at)
                 ORDER BY p.updated_at DESC";
             cmd.Parameters.AddWithValue("$u", user.ToString("D"));
+            cmd.Parameters.AddWithValue("$min", min_resume);
 
             var rows = new List<LastTouched>();
             using var rd = cmd.ExecuteReader();
