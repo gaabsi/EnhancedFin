@@ -39,6 +39,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         bool IsComplete);
 
     /// <summary>
+    /// Un épisode déjà touché, vu ou commencé. Forme commune aux deux sources
+    /// (Jellyfin et la table `playback`) pour trouver le prochain épisode à voir.
+    /// </summary>
+    public record EpisodeHistory(int Season, int Episode, bool Watched, DateTime At);
+
+    /// <summary>
     /// Pont vers la bibliothèque Jellyfin.
     ///
     /// Permet à la recherche de signaler ce que l'utilisateur possède déjà : un média
@@ -268,6 +274,54 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             }
 
             return playable;
+        }
+
+        /// <summary>
+        /// Épisodes de la série **sur ce serveur** que l'utilisateur a vus ou commencés.
+        /// Les épisodes spéciaux (saison 0) sont ignorés, comme par « À suivre ».
+        ///
+        /// Parametres :
+        /// - user_id (Guid) : utilisateur dont on applique les droits
+        /// - media_key (string) : clé de la série
+        ///
+        /// Output :
+        /// - history (List&lt;EpisodeHistory&gt;) : vide si la série n'est pas sur ce
+        ///   serveur ou si la bibliothèque répond mal
+        /// </summary>
+        public List<EpisodeHistory> episode_history(Guid user_id, string media_key)
+        {
+            var history = new List<EpisodeHistory>();
+
+            var user = _users.GetUserById(user_id);
+            if (user is null || !index(user_id).TryGetValue(media_key, out var match)) return history;
+
+            try
+            {
+                var episodes = _library.GetItemList(new InternalItemsQuery(user)
+                {
+                    AncestorIds = new[] { match.JellyfinId },
+                    IncludeItemTypes = new[] { BaseItemKind.Episode },
+                    Recursive = true,
+                });
+
+                foreach (var episode in episodes)
+                {
+                    if (episode.ParentIndexNumber is not (int season and > 0) || episode.IndexNumber is not int number) continue;
+
+                    var data = _user_data.GetUserData(user, episode);
+                    if (data is null || (!data.Played && data.PlaybackPositionTicks <= 0)) continue;
+
+                    // Un fichier multi-épisodes (E01-E02) vu compte pour son dernier numéro.
+                    var watched_up_to = data.Played ? (episode as Episode)?.IndexNumberEnd ?? number : number;
+                    history.Add(new EpisodeHistory(season, watched_up_to, data.Played, data.LastPlayedDate ?? DateTime.MinValue));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[EnhancedFin] Historique des épisodes en échec pour {Key}", media_key);
+            }
+
+            return history;
         }
 
         /// <summary>Index en cache s'il est encore valide, null sinon.</summary>

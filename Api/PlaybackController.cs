@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text.RegularExpressions;
 using Jellyfin.Plugin.EnhancedFin.Data;
 using Jellyfin.Plugin.EnhancedFin.Services;
@@ -43,32 +44,99 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
         private readonly Db _db;
         private readonly MediaCatalog _catalog;
+        private readonly TmdbClient _tmdb;
 
-        public PlaybackController(Db db, MediaCatalog catalog)
+        public PlaybackController(Db db, MediaCatalog catalog, TmdbClient tmdb)
         {
             _db = db;
             _catalog = catalog;
+            _tmdb = tmdb;
         }
 
         // GET /api/EnhancedFin/v1/me/continue-watching?limit=20
+        //
+        // Une entrée par média : le dernier épisode touché s'il est en cours (ou juste
+        // ouvert, pour une série : c'est le prochain à voir) ; pour une série dont il
+        // est vu, le prochain à voir (`next_up`, position 0), comme le « À suivre » de
+        // Jellyfin. Un film vu ou jamais lancé, une série à jour : absents.
         [HttpGet("me/continue-watching")]
-        public ActionResult continue_watching([FromQuery] int limit = 20)
+        public async Task<ActionResult> continue_watching([FromQuery] int limit = 20)
         {
-            var user_id = current_user_id();
-            if (user_id is null) return not_authenticated();
+            var user = current_user();
+            if (user is null) return not_authenticated();
             if (limit is < 1 or > 200)
                 return problem(400, "Limite invalide", "limit doit être compris entre 1 et 200.");
 
+            var items = new List<object>();
+            foreach (var row in last_touched(user.Value))
+            {
+                if (items.Count == limit) break;
+
+                var (season, episode, position, duration) = (row.Season, row.Episode, row.PositionTicks, row.DurationTicks);
+                if (row.Watched)
+                {
+                    if (row.MediaType != "tv"
+                        || await _catalog.next_up(user.Value, row.MediaKey, HttpContext.RequestAborted) is not { } next)
+                        continue;
+                    (season, episode, position, duration) = (next.Season, next.Episode, 0, 0);
+                }
+                else if (position <= 0 && row.MediaType != "tv") continue;
+
+                var details = row.MediaType == "tv" && MediaCatalog.split(row.MediaKey) is { } parts
+                    ? (await _tmdb.get_season(parts.TmdbId, season, HttpContext.RequestAborted))?.Episodes?
+                        .FirstOrDefault(e => e.EpisodeNumber == episode)
+                    : null;
+
+                items.Add(new
+                {
+                    mediaKey = row.MediaKey,
+                    season,
+                    episode,
+                    positionTicks = position,
+                    durationTicks = duration,
+                    // Calculé côté serveur : tous les clients en ont besoin pour la
+                    // barre de progression, autant ne pas le refaire trois fois.
+                    progress = duration > 0 ? Math.Round((double)position / duration, 4) : 0,
+                    lang = row.Lang,
+                    updatedAt = row.UpdatedAt,
+                    mediaType = row.MediaType,
+                    title = row.Title,
+                    year = row.Year,
+                    posterUrl = row.PosterUrl,
+                    backdropUrl = row.BackdropUrl,
+                    // Épisode seulement (TMDB).
+                    episodeName = details?.Name,
+                });
+            }
+
+            return Ok(new { items, total = items.Count });
+        }
+
+        private sealed record LastTouched(
+            string MediaKey, int Season, int Episode, long PositionTicks, long DurationTicks, bool Watched,
+            string? Lang, string UpdatedAt, string MediaType, string Title, int? Year, string? PosterUrl, string? BackdropUrl);
+
+        /// <summary>
+        /// Le dernier épisode touché de chaque média (un film : sa ligne), du plus récent
+        /// au plus ancien, sans les médias masqués.
+        ///
+        /// Règle de masquage : l'item est caché tant que hidden_at >= updated_at.
+        /// Reprendre la lecture rafraîchit updated_at et le fait donc réapparaître
+        /// automatiquement — comportement voulu, pas un effet de bord.
+        ///
+        /// Parametres :
+        /// - user (Guid) : utilisateur
+        ///
+        /// Output :
+        /// - rows (List&lt;LastTouched&gt;) : une ligne par média, `Watched` selon `SqlIsWatched`
+        /// </summary>
+        private List<LastTouched> last_touched(Guid user)
+        {
             using var con = _db.open();
             using var cmd = con.CreateCommand();
 
             // Une seule ligne par média (le dernier épisode touché), d'où ROW_NUMBER.
-            //
-            // Règle de masquage : l'item est caché tant que
-            // hidden_at >= updated_at. Reprendre la lecture rafraîchit updated_at et le
-            // fait donc réapparaître automatiquement — comportement voulu, pas un effet
-            // de bord.
-            cmd.CommandText = @"
+            cmd.CommandText = $@"
                 WITH dernier AS (
                     SELECT p.*, ROW_NUMBER() OVER (
                                PARTITION BY p.media_key ORDER BY p.updated_at DESC
@@ -76,52 +144,49 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                     FROM playback p
                     WHERE p.user_id = $u
                 )
-                SELECT d.media_key, d.season, d.episode, d.position_ticks,
-                       d.duration_ticks, d.lang, d.updated_at,
+                SELECT p.media_key, p.season, p.episode, p.position_ticks,
+                       p.duration_ticks, {SqlIsWatched}, p.lang, p.updated_at,
                        m.media_type, m.title, m.year, m.poster_url, m.backdrop_url
-                FROM dernier d
-                JOIN media m ON m.media_key = d.media_key
+                FROM dernier p
+                JOIN media m ON m.media_key = p.media_key
                 LEFT JOIN hidden_item h
-                       ON h.user_id = $u AND h.media_key = d.media_key
-                WHERE d.rang = 1
-                  AND d.position_ticks > 0
-                  AND (h.hidden_at IS NULL OR h.hidden_at < d.updated_at)
-                  AND (d.duration_ticks <= 0
-                       OR d.position_ticks < d.duration_ticks * $ratio)
-                ORDER BY d.updated_at DESC
-                LIMIT $limit";
-            cmd.Parameters.AddWithValue("$u", user_id);
-            cmd.Parameters.AddWithValue("$ratio", FinishedRatio);
-            cmd.Parameters.AddWithValue("$limit", limit);
+                       ON h.user_id = $u AND h.media_key = p.media_key
+                WHERE p.rang = 1
+                  AND (h.hidden_at IS NULL OR h.hidden_at < p.updated_at)
+                ORDER BY p.updated_at DESC";
+            cmd.Parameters.AddWithValue("$u", user.ToString("D"));
 
-            var items = new List<object>();
+            var rows = new List<LastTouched>();
             using var rd = cmd.ExecuteReader();
             while (rd.Read())
             {
-                var position = rd.GetInt64(3);
-                var duration = rd.GetInt64(4);
-
-                items.Add(new
-                {
-                    mediaKey = rd.GetString(0),
-                    season = rd.GetInt32(1),
-                    episode = rd.GetInt32(2),
-                    positionTicks = position,
-                    durationTicks = duration,
-                    // Calculé côté serveur : tous les clients en ont besoin pour la
-                    // barre de progression, autant ne pas le refaire trois fois.
-                    progress = duration > 0 ? Math.Round((double)position / duration, 4) : 0,
-                    lang = rd.IsDBNull(5) ? null : rd.GetString(5),
-                    updatedAt = rd.GetString(6),
-                    mediaType = rd.GetString(7),
-                    title = rd.GetString(8),
-                    year = rd.IsDBNull(9) ? (int?)null : rd.GetInt32(9),
-                    posterUrl = rd.IsDBNull(10) ? null : rd.GetString(10),
-                    backdropUrl = rd.IsDBNull(11) ? null : rd.GetString(11),
-                });
+                rows.Add(new LastTouched(
+                    rd.GetString(0), rd.GetInt32(1), rd.GetInt32(2), rd.GetInt64(3), rd.GetInt64(4), rd.GetInt64(5) == 1,
+                    rd.IsDBNull(6) ? null : rd.GetString(6), rd.GetString(7), rd.GetString(8), rd.GetString(9),
+                    rd.IsDBNull(10) ? null : rd.GetInt32(10),
+                    rd.IsDBNull(11) ? null : rd.GetString(11),
+                    rd.IsDBNull(12) ? null : rd.GetString(12)));
             }
+            return rows;
+        }
 
-            return Ok(new { items, total = items.Count });
+        // GET /api/EnhancedFin/v1/me/next-up/{mediaKey}
+        //
+        // Le prochain épisode à voir d'une série (« Reprendre S2E3 ») : règle et sources
+        // dans `MediaCatalog.next_up`. 404 quand la série est à jour.
+        [HttpGet("me/next-up/{mediaKey}")]
+        [RateLimit("outbound", 60)]
+        public async Task<ActionResult> next_up(string mediaKey)
+        {
+            var user = current_user();
+            if (user is null) return not_authenticated();
+            if (MediaCatalog.split(mediaKey) is not { } parts) return invalid_media_key(mediaKey);
+            if (parts.Type != "tv")
+                return problem(400, "Pas une série", "seule une série a un prochain épisode.");
+
+            return await _catalog.next_up(user.Value, mediaKey, HttpContext.RequestAborted) is { } next
+                ? Ok(new { mediaKey, season = next.Season, episode = next.Episode })
+                : problem(404, "Rien à voir", $"'{mediaKey}' est à jour ou inconnue de TMDB.");
         }
 
         // GET /api/EnhancedFin/v1/me/progress/{mediaKey}

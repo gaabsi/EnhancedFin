@@ -136,7 +136,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         /// `InvariantCulture` est indispensable : sous une culture française, 0.9 se
         /// sérialiserait « 0,9 » et produirait du SQL invalide.
         /// </remarks>
-        protected static readonly string SqlIsWatched =
+        // `internal` en plus : `MediaCatalog.next_up` applique la même règle, sans copie.
+        protected internal static readonly string SqlIsWatched =
             "(p.duration_ticks <= 0 OR p.position_ticks >= p.duration_ticks * "
             + FinishedRatio.ToString(CultureInfo.InvariantCulture) + ")";
 
