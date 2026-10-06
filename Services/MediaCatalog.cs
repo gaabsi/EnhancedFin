@@ -27,12 +27,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
     {
         private readonly Db _db;
         private readonly TmdbClient _tmdb;
+        private readonly JellyfinLibrary _library;
         private readonly ILogger<MediaCatalog> _logger;
 
-        public MediaCatalog(Db db, TmdbClient tmdb, ILogger<MediaCatalog> logger)
+        public MediaCatalog(Db db, TmdbClient tmdb, JellyfinLibrary library, ILogger<MediaCatalog> logger)
         {
             _db = db;
             _tmdb = tmdb;
+            _library = library;
             _logger = logger;
         }
 
@@ -390,6 +392,107 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             cmd.Parameters.AddWithValue("$air", (object?)air_date ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$now", now);
             cmd.ExecuteNonQuery();
+        }
+
+        /// <summary>
+        /// Prochain épisode à voir d'une série, selon la règle de Jellyfin : l'épisode
+        /// **en cours** (le dernier touché, sous 90 %) ; sinon le **suivant** du dernier
+        /// vu (même saison, sinon début de la suivante), déjà diffusé ; sans historique,
+        /// le premier épisode diffusé.
+        ///
+        /// L'historique fusionne les deux sources : épisodes du serveur (Jellyfin) et
+        /// lectures externes (`playback`). Une série en partie sur le serveur reprend donc
+        /// là où on l'a laissée, d'où qu'on l'ait regardée.
+        ///
+        /// Ici plutôt que dans un contrôleur : la route `me/next-up` et la lisibilité
+        /// d'une série s'en servent toutes les deux.
+        ///
+        /// Parametres :
+        /// - user_id (Guid) : utilisateur
+        /// - media_key (string) : clé de la série
+        /// - cancellation (CancellationToken) : annulation
+        ///
+        /// Output :
+        /// - next ((int Season, int Episode)?) : null si la série est à jour, inconnue de
+        ///   TMDB ou si la clé n'est pas une série
+        /// </summary>
+        public async Task<(int Season, int Episode)?> next_up(Guid user_id, string media_key, CancellationToken cancellation = default)
+        {
+            if (split(media_key) is not { Type: "tv" } parts) return null;
+
+            var last = external_history(user_id, media_key)
+                .Concat(_library.episode_history(user_id, media_key))
+                .MaxBy(entry => entry.At);
+
+            if (last is { Watched: false }) return (last.Season, last.Episode);
+
+            // Sans historique, « après S1E0 » = le premier épisode diffusé.
+            return await first_aired_after(parts.TmdbId, last?.Season ?? 1, last?.Episode ?? 0, cancellation);
+        }
+
+        /// <summary>
+        /// Épisodes vus ou commencés hors du serveur (table `playback`), même règle de
+        /// « vu » que partout ailleurs (`SqlIsWatched`).
+        ///
+        /// Parametres :
+        /// - user_id (Guid) : utilisateur
+        /// - media_key (string) : clé de la série
+        ///
+        /// Output :
+        /// - history (List&lt;EpisodeHistory&gt;) : épisodes hors saison 0
+        /// </summary>
+        private List<EpisodeHistory> external_history(Guid user_id, string media_key)
+        {
+            using var con = _db.open();
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = $@"
+                SELECT p.season, p.episode, {Api.EnhancedFinController.SqlIsWatched}, p.updated_at
+                FROM playback p
+                WHERE p.user_id = $u AND p.media_key = $k AND p.season > 0";
+            cmd.Parameters.AddWithValue("$u", user_id.ToString("D"));
+            cmd.Parameters.AddWithValue("$k", media_key);
+
+            var history = new List<EpisodeHistory>();
+            using var rd = cmd.ExecuteReader();
+            while (rd.Read())
+            {
+                // Dates avec ou sans fraction de seconde (lignes migrées) : toutes en UTC.
+                var at = DateTime.Parse(rd.GetString(3), CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
+                history.Add(new EpisodeHistory(rd.GetInt32(0), rd.GetInt32(1), rd.GetInt64(2) == 1, at));
+            }
+            return history;
+        }
+
+        /// <summary>
+        /// Premier épisode qui suit (saison, épisode), s'il est déjà diffusé.
+        ///
+        /// Parametres :
+        /// - tmdb_id (int) : identifiant TMDB de la série
+        /// - season (int) : saison du dernier épisode vu
+        /// - episode (int) : son numéro, 0 pour partir du début de la saison
+        /// - cancellation (CancellationToken) : annulation
+        ///
+        /// Output :
+        /// - next ((int Season, int Episode)?) : null si le suivant n'est pas encore
+        ///   diffusé ou s'il n'y en a pas
+        /// </summary>
+        private async Task<(int Season, int Episode)?> first_aired_after(int tmdb_id, int season, int episode, CancellationToken cancellation)
+        {
+            var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
+
+            foreach (var number in (await _tmdb.get_seasons(tmdb_id, cancellation)).Select(s => s.SeasonNumber).Where(n => n >= season))
+            {
+                var next = (await _tmdb.get_season(tmdb_id, number, cancellation))?.Episodes?
+                    .Where(e => number > season || e.EpisodeNumber > episode)
+                    .OrderBy(e => e.EpisodeNumber)
+                    .FirstOrDefault();
+                if (next is null) continue;
+
+                var aired = !string.IsNullOrWhiteSpace(next.AirDate) && string.CompareOrdinal(next.AirDate, today) <= 0;
+                return aired ? (number, next.EpisodeNumber) : null;
+            }
+            return null;
         }
 
         /// <summary>
