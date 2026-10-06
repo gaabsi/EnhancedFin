@@ -113,7 +113,7 @@ Media are identified by a **media key**, `"{type}:{tmdbId}"`, e.g. `movie:550` o
 | `PUT` `DELETE` | `/me/ratings/{key}` | rate (`{ "score": 2 }`) / unrate |
 | `GET` | `/me/watchlist` | my watchlist (`?type=`, `?genre=`) |
 | `PUT` `DELETE` | `/me/watchlist/{key}` | add / remove |
-| `GET` | `/me/continue-watching` | resume list (`?limit=`): in-progress items, and the next episode of a show whose last episode is watched (`episodeName`) |
+| `GET` | `/me/continue-watching` | resume list (`?limit=`): items past the server's `MinResumePct`, and the next episode of a show whose last episode is watched (`episodeName`) |
 | `GET` | `/me/next-up/{key}` | next episode to watch of a show (`{ season, episode }`, 404 when up to date) |
 | `GET` `PUT` | `/me/progress/{key}` | playback progress |
 | `PUT` `DELETE` | `/me/watched/{key}` | mark / unmark watched (`{ season, episodes }`) |
