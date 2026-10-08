@@ -76,8 +76,9 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
 
         /// <summary>
         /// Médias vus, par utilisateur, gardés deux minutes : `me/ratings/pending` les
-        /// recalculait à chaque appel en interrogeant chaque série commencée. Court, pour
-        /// qu'un film tout juste vu entre vite dans « à noter ».
+        /// recalculait à chaque appel en interrogeant chaque série commencée. Effacés dès
+        /// qu'un « vu » de l'utilisateur change (`on_user_data_saved`) : sans ça, un
+        /// épisode marqué vu n'entrait dans « à noter » qu'au bout de ces deux minutes.
         /// </summary>
         private static readonly TimeSpan WatchedTtl = TimeSpan.FromMinutes(2);
 
@@ -105,7 +106,17 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             _users = users;
             _user_data = user_data;
             _logger = logger;
+
+            // Le service vit autant que le serveur (singleton) : pas de désabonnement.
+            _user_data.UserDataSaved += on_user_data_saved;
         }
+
+        /// <summary>
+        /// Oublie les médias vus de l'utilisateur dont une donnée de lecture vient de
+        /// changer (vu, non vu, position). Le prochain appel les recalcule.
+        /// </summary>
+        private void on_user_data_saved(object? sender, UserDataSaveEventArgs e)
+            => _watched.TryRemove(e.UserId, out _);
 
         /// <summary>
         /// Cherche dans la bibliothèque **visible par cet utilisateur** les items
