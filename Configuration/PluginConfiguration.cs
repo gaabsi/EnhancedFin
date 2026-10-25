@@ -27,9 +27,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Configuration
 
         /// <summary>
         /// Affiche la rangée des tendances TMDB de la semaine dans l'onglet Explorer des
-        /// clients. Activé par défaut ; désactivé, `GET trending` répond `enabled: false`
-        /// sans appeler TMDB, et le client retire la rangée.
+        /// clients. **Désactivé par défaut** : l'admin choisit de montrer une vitrine de
+        /// titres commerciaux. Désactivé, `GET trending` répond `enabled: false` sans
+        /// appeler TMDB, et le client retire la rangée.
         /// </summary>
-        public bool ShowTrending { get; set; } = true;
+        public bool ShowTrending { get; set; }
     }
 }

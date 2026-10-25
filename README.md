@@ -80,7 +80,7 @@ immediately, without a restart.
 | TMDB API key | **yes** | metadata, search, trending, release dates | free account on [themoviedb.org](https://www.themoviedb.org/settings/api) → Settings → API → "API Key" (v3) |
 | MDBList API key | no | Rotten Tomatoes scores, omitted if empty | free account on [mdblist.com](https://mdblist.com/preferences/) → Preferences → API key (1,000 requests a day; scores are cached 7 days) |
 | Seerr URL + API key | no | availability and requests, omitted if empty | in Jellyseerr / Overseerr: Settings → General → API Key; the URL is how the Jellyfin server reaches Seerr |
-| Show trending titles | no (on) | TMDB weekly trends in the Explore tab of clients; when off, `/trending` returns `enabled: false` and clients hide the row | |
+| Show trending titles | no (off) | TMDB weekly trends in the Explore tab of clients; when off, `/trending` returns `enabled: false` and clients hide the row | |
 
 The settings are stored in `<jellyfin-config>/plugins/configurations/Jellyfin.Plugin.EnhancedFin.xml`,
 readable by administrators only. Never share or commit this file: it holds your API keys.
