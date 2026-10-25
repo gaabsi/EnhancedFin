@@ -33,7 +33,7 @@ namespace Jellyfin.Plugin.EnhancedFin
         }
 
         /// <summary>
-        /// Page de réglages du tableau de bord (clés, test des clés, tendances, sous-titres ASS),
+        /// Page de réglages du tableau de bord (clés, test des clés, tendances),
         /// intégrée au DLL : réservée aux administrateurs par Jellyfin.
         /// </summary>
         public IEnumerable<PluginPageInfo> GetPages() => new[]

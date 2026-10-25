@@ -77,31 +77,6 @@
                         </div>
                     </div>
 
-                    <div class="verticalSection">
-                        <h3 class="sectionTitle">ASS subtitles</h3>
-                        <div class="checkboxContainer checkboxContainer-withDescription">
-                            <label class="emby-checkbox-label">
-                                <input id="ConvertAssSubtitles" name="ConvertAssSubtitles" type="checkbox" is="emby-checkbox" />
-                                <span>Convert embedded ASS subtitles to SRT</span>
-                            </label>
-                            <div class="fieldDescription checkboxFieldDescription">
-                                <b>Rewrites your files.</b> After each library scan, embedded ASS tracks of .mkv files
-                                are converted to external .srt files and removed (stream copy, no re-encoding).
-                                For players that cannot render ASS; ASS styling is lost.
-                            </div>
-                        </div>
-                        <div class="checkboxContainer checkboxContainer-withDescription">
-                            <label class="emby-checkbox-label">
-                                <input id="KeepAssBackup" name="KeepAssBackup" type="checkbox" is="emby-checkbox" />
-                                <span>Keep a backup of each converted file</span>
-                            </label>
-                            <div class="fieldDescription checkboxFieldDescription">
-                                The original is kept as a hidden ".file.mkv.ass-backup" next to it. Doubles disk usage
-                                until you delete the backups.
-                            </div>
-                        </div>
-                    </div>
-
                     <button is="emby-button" type="submit" class="raised button-submit block emby-button">
                         <span>Save</span>
                     </button>
@@ -122,7 +97,7 @@
                 var page = document.querySelector('#EnhancedFinConfigPage');
                 var form = page.querySelector('#EnhancedFinConfigForm');
                 var textFields = ['TmdbApiKey', 'MdblistApiKey', 'SeerrUrl', 'SeerrApiKey'];
-                var checkFields = ['ShowTrending', 'ConvertAssSubtitles', 'KeepAssBackup'];
+                var checkFields = ['ShowTrending'];
 
                 function field(id) {
                     return page.querySelector('#' + id);

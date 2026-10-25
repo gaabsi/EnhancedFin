@@ -24,8 +24,6 @@
 - **Seerr requests**: request a movie or seasons on behalf of the calling user.
 - **SyncPlay**: invite a user into your group, and automatically stop groups that
   everyone left mid-playback.
-- **ASS → SRT** (opt-in): converts embedded ASS subtitles to external `.srt` files,
-  for players that cannot render ASS.
 
 Each user only ever sees their own data, and only items from the libraries they can
 access on the server.
@@ -83,8 +81,6 @@ immediately, without a restart.
 | MDBList API key | no | Rotten Tomatoes scores, omitted if empty | free account on [mdblist.com](https://mdblist.com/preferences/) → Preferences → API key (1,000 requests a day; scores are cached 7 days) |
 | Seerr URL + API key | no | availability and requests, omitted if empty | in Jellyseerr / Overseerr: Settings → General → API Key; the URL is how the Jellyfin server reaches Seerr |
 | Show trending titles | no (on) | TMDB weekly trends in the Explore tab of clients; when off, `/trending` returns `enabled: false` and clients hide the row | |
-| Convert ASS subtitles | no (off) | **rewrites your files**: after each library scan, converts embedded ASS subtitles of `.mkv` files to external `.srt` and removes the converted tracks (stream copy, no re-encoding). For players that cannot render ASS; ASS styling is lost. | |
-| Keep ASS backup | no (on) | keeps each original as a hidden `.<file>.ass-backup` (e.g. `.Movie.mkv.ass-backup`) next to it. Doubles disk usage until you delete the backups. | |
 
 The settings are stored in `<jellyfin-config>/plugins/configurations/Jellyfin.Plugin.EnhancedFin.xml`,
 readable by administrators only. Never share or commit this file: it holds your API keys.
@@ -144,19 +140,11 @@ Conventions:
 
 ## ⏱️ Scheduled tasks
 
-Both appear in the dashboard under the **EnhancedFin** category.
+It appears in the dashboard under the **EnhancedFin** category.
 
 | Task | Trigger | What it does |
 |---|---|---|
 | Media refresh | daily, 4 AM | completes incomplete media records and refreshes release dates of followed shows, in batches of 50 |
-| ASS → SRT | after each library scan + manual, **only if `ConvertAssSubtitles` is on** | converts embedded ASS tracks to `<name>.<lang>[.sdh][.forced].srt`, then remuxes the file without them |
-
-> **Warning** — when enabled, the ASS task **rewrites your media files**. Only tracks
-> whose `.srt` was just written are removed (a second track in the same language, or
-> one whose `.srt` already exists, is kept). Each removed track is checked to be ASS
-> in the file itself, the remux must keep exactly the other tracks and the duration,
-> and the original is replaced in a single atomic rename, kept as a hidden backup if
-> `KeepAssBackup` is on. On a read-only library it only logs what it would have done.
 
 ## 🗂️ Project layout
 

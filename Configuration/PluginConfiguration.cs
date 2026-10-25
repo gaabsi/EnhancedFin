@@ -26,20 +26,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Configuration
         public string SeerrApiKey { get; set; } = "";
 
         /// <summary>
-        /// Convertit les sous-titres ASS intégrés en `.srt` externes et les retire des mkv
-        /// (`AssSubtitlesTask`). **Désactivé par défaut** : la tâche réécrit les fichiers
-        /// de la bibliothèque, ce qu'un admin doit choisir en connaissance de cause.
-        /// </summary>
-        public bool ConvertAssSubtitles { get; set; }
-
-        /// <summary>
-        /// Garde l'original de chaque mkv converti, en fichier caché à côté du film
-        /// (`.nom.mkv.ass-backup`, ignoré par Jellyfin). À désactiver une fois le résultat
-        /// vérifié : chaque sauvegarde double la place du film.
-        /// </summary>
-        public bool KeepAssBackup { get; set; } = true;
-
-        /// <summary>
         /// Affiche la rangée des tendances TMDB de la semaine dans l'onglet Explorer des
         /// clients. Activé par défaut ; désactivé, `GET trending` répond `enabled: false`
         /// sans appeler TMDB, et le client retire la rangée.
