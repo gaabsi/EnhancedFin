@@ -491,8 +491,6 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// </summary>
         private async Task<(int Season, int Episode)?> first_aired_after(int tmdb_id, int season, int episode, CancellationToken cancellation)
         {
-            var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
-
             foreach (var number in (await _tmdb.get_seasons(tmdb_id, cancellation)).Select(s => s.SeasonNumber).Where(n => n >= season))
             {
                 var next = (await _tmdb.get_season(tmdb_id, number, cancellation))?.Episodes?
@@ -501,8 +499,7 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
                     .FirstOrDefault();
                 if (next is null) continue;
 
-                var aired = !string.IsNullOrWhiteSpace(next.AirDate) && string.CompareOrdinal(next.AirDate, today) <= 0;
-                return aired ? (number, next.EpisodeNumber) : null;
+                return next.HasAired ? (number, next.EpisodeNumber) : null;
             }
             return null;
         }

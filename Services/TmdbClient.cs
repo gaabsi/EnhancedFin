@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -228,7 +229,15 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         // Liste d'épisodes de la fiche ; le calendrier n'en lit que les dates.
         [property: JsonPropertyName("overview")] string? Overview = null,
         [property: JsonPropertyName("still_path")] string? StillPath = null,
-        [property: JsonPropertyName("runtime")] int? Runtime = null);
+        [property: JsonPropertyName("runtime")] int? Runtime = null)
+    {
+        /// <summary>
+        /// Épisode déjà diffusé : date TMDB passée ou du jour (UTC). Sans date (« à
+        /// annoncer ») : pas encore.
+        /// </summary>
+        public bool HasAired => !string.IsNullOrWhiteSpace(AirDate)
+            && string.CompareOrdinal(AirDate, DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)) <= 0;
+    }
 
     public record TmdbSeason(
         [property: JsonPropertyName("episodes")] List<TmdbEpisode>? Episodes,
