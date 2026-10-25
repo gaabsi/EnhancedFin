@@ -65,6 +65,19 @@
                     </div>
 
                     <div class="verticalSection">
+                        <h3 class="sectionTitle">Explore</h3>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="ShowTrending" name="ShowTrending" type="checkbox" is="emby-checkbox" />
+                                <span>Show trending titles</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">
+                                Shows TMDB's weekly trends in the Explore tab of clients. When off, the row is hidden.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="verticalSection">
                         <h3 class="sectionTitle">ASS subtitles</h3>
                         <div class="checkboxContainer checkboxContainer-withDescription">
                             <label class="emby-checkbox-label">
@@ -109,7 +122,7 @@
                 var page = document.querySelector('#EnhancedFinConfigPage');
                 var form = page.querySelector('#EnhancedFinConfigForm');
                 var textFields = ['TmdbApiKey', 'MdblistApiKey', 'SeerrUrl', 'SeerrApiKey'];
-                var checkFields = ['ConvertAssSubtitles', 'KeepAssBackup'];
+                var checkFields = ['ShowTrending', 'ConvertAssSubtitles', 'KeepAssBackup'];
 
                 function field(id) {
                     return page.querySelector('#' + id);

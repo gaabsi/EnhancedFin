@@ -18,9 +18,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     /// C'est `nextCursor` qui porte l'information utile : absent, il n'y a plus rien
     /// à charger.
     ///
+    /// `enabled` à `false` : l'admin a désactivé les tendances (`ShowTrending`), la
+    /// liste est vide et le client retire la rangée.
+    ///
     /// Propriétés en camelCase à dessein — voir <see cref="ListResponse{T}"/>.
     /// </summary>
-    public record TrendingResponse(IReadOnlyList<SearchItem> items, int? nextCursor);
+    public record TrendingResponse(IReadOnlyList<SearchItem> items, int? nextCursor, bool enabled = true);
 
     /// <summary>
     /// Tendances de la semaine, filtrables, pour le rail de découverte.
@@ -104,6 +107,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             if (page is < 1 or > LastPage)
                 return problem(400, "Curseur invalide",
                                $"cursor doit être compris entre 1 et {LastPage}.");
+
+            // Désactivées par l'admin : réponse vide, sans appel à TMDB.
+            if (Plugin.Instance?.Configuration?.ShowTrending == false)
+                return Ok(new TrendingResponse([], null, enabled: false));
 
             var (hits, next) = await collect(filter ?? "all", page);
 

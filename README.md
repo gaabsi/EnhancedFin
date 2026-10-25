@@ -82,6 +82,7 @@ immediately, without a restart.
 | TMDB API key | **yes** | metadata, search, trending, release dates | free account on [themoviedb.org](https://www.themoviedb.org/settings/api) → Settings → API → "API Key" (v3) |
 | MDBList API key | no | Rotten Tomatoes scores, omitted if empty | free account on [mdblist.com](https://mdblist.com/preferences/) → Preferences → API key (1,000 requests a day; scores are cached 7 days) |
 | Seerr URL + API key | no | availability and requests, omitted if empty | in Jellyseerr / Overseerr: Settings → General → API Key; the URL is how the Jellyfin server reaches Seerr |
+| Show trending titles | no (on) | TMDB weekly trends in the Explore tab of clients; when off, `/trending` returns `enabled: false` and clients hide the row | |
 | Convert ASS subtitles | no (off) | **rewrites your files**: after each library scan, converts embedded ASS subtitles of `.mkv` files to external `.srt` and removes the converted tracks (stream copy, no re-encoding). For players that cannot render ASS; ASS styling is lost. | |
 | Keep ASS backup | no (on) | keeps each original as a hidden `.<file>.ass-backup` (e.g. `.Movie.mkv.ass-backup`) next to it. Doubles disk usage until you delete the backups. | |
 
@@ -123,7 +124,7 @@ Media are identified by a **media key**, `"{type}:{tmdbId}"`, e.g. `movie:550` o
 | `PUT` `DELETE` | `/me/follows/{key}` | follow / unfollow |
 | `GET` | `/me/calendar` | releases grouped by day (`?from=`, `?to=`) |
 | `GET` | `/search` | search by title (`?q=`, `?type=`) |
-| `GET` | `/trending` | weekly trends (`?filter=`, `?cursor=`) |
+| `GET` | `/trending` | weekly trends (`?filter=`, `?cursor=`); `enabled: false` when the admin turned them off |
 | `GET` | `/person/{tmdbId}` | person page and filmography |
 | `GET` | `/seerr/{key}` | Seerr status and seasons |
 | `POST` | `/me/requests/{key}` | request on Seerr (`{ seasons: [..] }` for a show) |

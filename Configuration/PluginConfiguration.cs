@@ -38,5 +38,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Configuration
         /// vérifié : chaque sauvegarde double la place du film.
         /// </summary>
         public bool KeepAssBackup { get; set; } = true;
+
+        /// <summary>
+        /// Affiche la rangée des tendances TMDB de la semaine dans l'onglet Explorer des
+        /// clients. Activé par défaut ; désactivé, `GET trending` répond `enabled: false`
+        /// sans appeler TMDB, et le client retire la rangée.
+        /// </summary>
+        public bool ShowTrending { get; set; } = true;
     }
 }
