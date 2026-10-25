@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "1.1.2.0",
+        "changelog": "Next Up: when several episodes are marked as watched at once, the furthest one is used; episodes opened below the server's minimum resume percentage no longer move a show back.\nContinue Watching: a next episode is only suggested when it can be played on this server.\nLogos: French (France) logos are preferred, then English; Quebec logos are only used as a last resort. Media pages are refreshed once to apply it.",
+        "targetAbi": "12.0.0.0",
+        "sourceUrl": "https://github.com/gaabsi/EnhancedFin/releases/download/v1.1.2/EnhancedFin_1.1.2.0.zip",
+        "checksum": "a932f0a97866cca8a70ff6663511c4b7",
+        "timestamp": "2026-10-25T10:43:04Z"
+      },
+      {
         "version": "1.1.1.0",
         "changelog": "Fix: the \"To rate\" list now updates as soon as an episode or movie is marked watched or unwatched (it could lag by up to two minutes).",
         "targetAbi": "12.0.0.0",
