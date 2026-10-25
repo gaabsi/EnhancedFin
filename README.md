@@ -18,10 +18,11 @@
 - **Follows and calendar**: follow a show, get its upcoming episodes grouped by day.
 - **Search**: merges your own data, TMDB and the Jellyfin library (each result tells
   whether it's playable on the server).
-- **Trending**: TMDB weekly trends, filterable by movie, show or anime.
+- **Trending** (optional, off by default): TMDB weekly trends, filterable by movie, show or anime.
 - **Rich media pages**: metadata, cast, directors, seasons and episodes with watched
-  state, Rotten Tomatoes scores (via MDBList) and Seerr availability.
-- **Seerr requests**: request a movie or seasons on behalf of the calling user.
+  state, and optional critic and audience scores (via MDBList).
+- **Requests** (optional): if the administrator connects Seerr, users can send a
+  request for a title to the administrator.
 - **SyncPlay**: invite a user into your group, and automatically stop groups that
   everyone left mid-playback.
 
@@ -78,7 +79,7 @@ immediately, without a restart.
 | Setting | Required | Purpose | Where to get it |
 |---|---|---|---|
 | TMDB API key | **yes** | metadata, search, trending, release dates | free account on [themoviedb.org](https://www.themoviedb.org/settings/api) → Settings → API → "API Key" (v3) |
-| MDBList API key | no | Rotten Tomatoes scores, omitted if empty | free account on [mdblist.com](https://mdblist.com/preferences/) → Preferences → API key (1,000 requests a day; scores are cached 7 days) |
+| MDBList API key | no | critic and audience scores, omitted if empty | free account on [mdblist.com](https://mdblist.com/preferences/) → Preferences → API key (1,000 requests a day; scores are cached 7 days) |
 | Seerr URL + API key | no | availability and requests, omitted if empty | in Jellyseerr / Overseerr: Settings → General → API Key; the URL is how the Jellyfin server reaches Seerr |
 | Show trending titles | no (off) | TMDB weekly trends in the Explore tab of clients; when off, `/trending` returns `enabled: false` and clients hide the row | |
 
