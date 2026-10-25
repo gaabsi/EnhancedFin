@@ -6,6 +6,7 @@ using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.EnhancedFin.Data;
+using MediaBrowser.Controller.Configuration;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
@@ -28,13 +29,15 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         private readonly Db _db;
         private readonly TmdbClient _tmdb;
         private readonly JellyfinLibrary _library;
+        private readonly IServerConfigurationManager _config;
         private readonly ILogger<MediaCatalog> _logger;
 
-        public MediaCatalog(Db db, TmdbClient tmdb, JellyfinLibrary library, ILogger<MediaCatalog> logger)
+        public MediaCatalog(Db db, TmdbClient tmdb, JellyfinLibrary library, IServerConfigurationManager config, ILogger<MediaCatalog> logger)
         {
             _db = db;
             _tmdb = tmdb;
             _library = library;
+            _config = config;
             _logger = logger;
         }
 
@@ -419,9 +422,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         {
             if (split(media_key) is not { Type: "tv" } parts) return null;
 
+            // À date égale (épisodes marqués vus d'un coup), le plus avancé.
             var last = external_history(user_id, media_key)
                 .Concat(_library.episode_history(user_id, media_key))
-                .MaxBy(entry => entry.At);
+                .OrderByDescending(entry => entry.At)
+                .ThenByDescending(entry => entry.Season)
+                .ThenByDescending(entry => entry.Episode)
+                .FirstOrDefault();
 
             if (last is { Watched: false }) return (last.Season, last.Episode);
 
@@ -432,6 +439,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         /// <summary>
         /// Épisodes vus ou commencés hors du serveur (table `playback`), même règle de
         /// « vu » que partout ailleurs (`SqlIsWatched`).
+        ///
+        /// Une ouverture sous `MinResumePct` du serveur est ignorée, comme dans
+        /// `continue-watching` : un ancien épisode entrouvert ne fait pas reculer la série.
+        /// Côté Jellyfin, rien à faire : il remet déjà la position à 0 sous ce seuil.
         ///
         /// Parametres :
         /// - user_id (Guid) : utilisateur
@@ -447,9 +458,11 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
             cmd.CommandText = $@"
                 SELECT p.season, p.episode, {Api.EnhancedFinController.SqlIsWatched}, p.updated_at
                 FROM playback p
-                WHERE p.user_id = $u AND p.media_key = $k AND p.season > 0";
+                WHERE p.user_id = $u AND p.media_key = $k AND p.season > 0
+                  AND ({Api.EnhancedFinController.SqlIsWatched} OR p.position_ticks >= p.duration_ticks * $min)";
             cmd.Parameters.AddWithValue("$u", user_id.ToString("D"));
             cmd.Parameters.AddWithValue("$k", media_key);
+            cmd.Parameters.AddWithValue("$min", _config.Configuration.MinResumePct / 100.0);
 
             var history = new List<EpisodeHistory>();
             using var rd = cmd.ExecuteReader();

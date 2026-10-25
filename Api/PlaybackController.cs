@@ -143,11 +143,14 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
             using var con = _db.open();
             using var cmd = con.CreateCommand();
 
-            // Une seule ligne par média (le dernier épisode touché), d'où ROW_NUMBER.
+            // Une seule ligne par média (le dernier épisode touché), d'où ROW_NUMBER. À date
+            // égale (épisodes marqués vus d'un coup), le plus avancé : sinon le suivant
+            // proposé peut être un épisode déjà vu.
             cmd.CommandText = $@"
                 WITH dernier AS (
                     SELECT p.*, ROW_NUMBER() OVER (
-                               PARTITION BY p.media_key ORDER BY p.updated_at DESC
+                               PARTITION BY p.media_key
+                               ORDER BY p.updated_at DESC, p.season DESC, p.episode DESC
                            ) AS rang
                     FROM playback p
                     WHERE p.user_id = $u
