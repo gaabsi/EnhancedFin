@@ -6,7 +6,7 @@
 </div>
 
 <p align="center">
-  <b>EnhancedFin</b> is a <a href="https://github.com/jellyfin/jellyfin">Jellyfin</a> server plugin that adds a personal layer on top of your library: ratings, watchlist, continue watching, followed shows and a release calendar. Everything is keyed on TMDB, so it also works for titles you <b>don't</b> have on the server. It powers the discovery features of <a href="https://github.com/gaabsi/SweetFin"><b>SweetFin</b></a>, the iOS client, and exposes a REST API any client can use.
+  <b>EnhancedFin</b> is a <a href="https://github.com/jellyfin/jellyfin">Jellyfin</a> server plugin that adds a personal layer on top of your library: ratings, watchlist, continue watching, followed shows and a release calendar. Everything is keyed on TMDB, so it also works for titles you <b>don't</b> have on the server. It powers the tracking features of <a href="https://github.com/gaabsi/SweetFin"><b>SweetFin</b></a>, the iOS client, and exposes a REST API any client can use.
 </p>
 
 ## ✨ Features
