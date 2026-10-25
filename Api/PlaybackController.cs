@@ -46,13 +46,15 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         private readonly Db _db;
         private readonly MediaCatalog _catalog;
         private readonly TmdbClient _tmdb;
+        private readonly JellyfinLibrary _library;
         private readonly IServerConfigurationManager _config;
 
-        public PlaybackController(Db db, MediaCatalog catalog, TmdbClient tmdb, IServerConfigurationManager config)
+        public PlaybackController(Db db, MediaCatalog catalog, TmdbClient tmdb, JellyfinLibrary library, IServerConfigurationManager config)
         {
             _db = db;
             _catalog = catalog;
             _tmdb = tmdb;
+            _library = library;
             _config = config;
         }
 
@@ -60,7 +62,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
         //
         // Une entrée par média : le dernier épisode touché s'il est en cours ; pour une
         // série dont il est vu, le prochain à voir (`next_up`, position 0), comme le
-        // « À suivre » de Jellyfin. Un film vu, une série à jour : absents.
+        // « À suivre » de Jellyfin. Un film vu, une série à jour, une entrée que
+        // l'utilisateur ne peut pas lancer (`is_playable_entry`) : absents.
         //
         // Comme Jellyfin, une ouverture sous `MinResumePct` du serveur (5 % par défaut)
         // ne compte pas : un film ouvert puis fermé n'est pas une reprise, une série
@@ -86,6 +89,8 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
                         continue;
                     (season, episode, position, duration) = (next.Season, next.Episode, 0, 0);
                 }
+                if (!is_playable_entry(user.Value, row.MediaKey, row.MediaType, season, episode))
+                    continue;
 
                 var details = row.MediaType == "tv" && MediaCatalog.split(row.MediaKey) is { } parts
                     ? (await _tmdb.get_season(parts.TmdbId, season, HttpContext.RequestAborted))?.Episodes?
@@ -116,6 +121,27 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
 
             return Ok(new { items, total = items.Count });
         }
+
+        /// <summary>
+        /// L'entrée proposée est-elle lisible ? Seulement si l'utilisateur peut la lancer
+        /// depuis sa médiathèque (`MediaController.OnlyLibraryIsPlayable`) : sinon la tuile
+        /// ouvrirait un lecteur sans rien à lire.
+        ///
+        /// Parametres :
+        /// - user (Guid) : utilisateur dont on applique les droits
+        /// - media_key (string) : clé du film ou de la série
+        /// - media_type (string) : `movie` ou `tv`
+        /// - season (int) : saison de l'épisode proposé (série)
+        /// - episode (int) : épisode proposé (série)
+        ///
+        /// Output :
+        /// - playable (bool) : true si la tuile peut lancer la lecture
+        /// </summary>
+        private bool is_playable_entry(Guid user, string media_key, string media_type, int season, int episode)
+            => !MediaController.OnlyLibraryIsPlayable
+                || (media_type == "tv"
+                    ? _library.find_playable_episodes(user, media_key, season).ContainsKey(episode)
+                    : _library.find_playable(user, media_key) is not null);
 
         private sealed record LastTouched(
             string MediaKey, int Season, int Episode, long PositionTicks, long DurationTicks, bool Watched,

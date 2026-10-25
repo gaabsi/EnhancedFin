@@ -31,6 +31,12 @@ namespace Jellyfin.Plugin.EnhancedFin.Api
     /// </summary>
     public class MediaController : EnhancedFinController
     {
+        /// <summary>
+        /// Seule la médiathèque se lit : « Continuer de regarder » ne propose que ce que
+        /// l'utilisateur peut lancer depuis elle (`PlaybackController.is_playable_entry`).
+        /// </summary>
+        internal const bool OnlyLibraryIsPlayable = true;
+
         private readonly Db _db;
         private readonly MediaCatalog _catalog;
         private readonly MdblistClient _mdblist;
