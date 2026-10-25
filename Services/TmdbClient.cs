@@ -117,9 +117,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
         [property: JsonPropertyName("external_ids")] TmdbExternalIds? ExternalIds = null)
     {
         /// <summary>
-        /// Logo à retenir, par ordre de préférence : français, anglais, puis sans
-        /// langue. Un logo anglais vaut mieux que pas de logo — la fiche retomberait
-        /// sinon sur le titre en texte.
+        /// Logo à retenir, par ordre de préférence : français hors Québec, anglais,
+        /// sans langue, puis québécois. Un logo `fr-CA` porte le titre québécois
+        /// (« La note américaine » pour Killers of the Flower Moon), alors que la
+        /// France garde souvent le titre original : l'anglais passe donc avant lui.
+        /// Un logo, même québécois, vaut mieux que pas de logo — la fiche
+        /// retomberait sinon sur le titre en texte. TMDB trie par note : `Find`
+        /// rend le mieux noté de chaque catégorie.
         /// </summary>
         public string? LogoPath
         {
@@ -128,9 +132,10 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
                 var logos = Images?.Logos;
                 if (logos is null || logos.Count == 0) return null;
 
-                return logos.Find(l => l.Language == "fr")?.FilePath
+                return logos.Find(l => l.Language == "fr" && l.Country != "CA")?.FilePath
                     ?? logos.Find(l => l.Language == "en")?.FilePath
                     ?? logos.Find(l => l.Language is null)?.FilePath
+                    ?? logos.Find(l => l.Language == "fr")?.FilePath
                     ?? logos[0].FilePath;
             }
         }
@@ -163,11 +168,13 @@ namespace Jellyfin.Plugin.EnhancedFin.Services
 
     /// <summary>
     /// Une image TMDB. `iso_639_1` vaut null pour une image sans texte, donc
-    /// utilisable quelle que soit la langue.
+    /// utilisable quelle que soit la langue. `iso_3166_1` distingue les variantes
+    /// d'une même langue : un logo `fr` + `CA` porte le titre québécois.
     /// </summary>
     public record TmdbImage(
         [property: JsonPropertyName("file_path")] string? FilePath,
-        [property: JsonPropertyName("iso_639_1")] string? Language);
+        [property: JsonPropertyName("iso_639_1")] string? Language,
+        [property: JsonPropertyName("iso_3166_1")] string? Country = null);
 
     public record TmdbImages(
         [property: JsonPropertyName("logos")] List<TmdbImage>? Logos);

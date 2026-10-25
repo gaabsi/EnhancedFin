@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
 using MediaBrowser.Common.Configuration;
@@ -39,6 +40,32 @@ namespace Jellyfin.Plugin.EnhancedFin.Data
             ensure_schema();
             ensure_columns();
             fix_svg_logos();
+            migrate_data();
+        }
+
+        /// <summary>
+        /// Migrations de données à jouer une seule fois, repérées par `PRAGMA user_version`
+        /// (numéro gardé dans le fichier de la base, 0 à sa création).
+        ///
+        /// 1 : logos choisis avant que les logos québécois (`fr-CA`) soient écartés.
+        ///     Toutes les fiches sont marquées à relire : `GET /media` les relit une par
+        ///     une à leur prochaine ouverture (`MediaCatalog.needs_facts`), et l'UPSERT
+        ///     remplace le logo par celui de la nouvelle règle.
+        /// </summary>
+        private void migrate_data()
+        {
+            using var con = new SqliteConnection(ConnectionString);
+            con.Open();
+
+            using var version = con.CreateCommand();
+            version.CommandText = "PRAGMA user_version";
+            if (Convert.ToInt64(version.ExecuteScalar(), CultureInfo.InvariantCulture) >= 1) return;
+
+            using var reset = con.CreateCommand();
+            reset.CommandText = @"
+                UPDATE media_detail SET facts_refreshed_at = NULL;
+                PRAGMA user_version = 1;";
+            reset.ExecuteNonQuery();
         }
 
         /// <summary>
